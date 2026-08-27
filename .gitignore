@@ -1,0 +1,32 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.mypy_cache/
+.venv/
+venv/
+
+# Build products
+build/
+dist/
+*.so
+*.pyd
+
+# Local datasets and experiment products
+data/
+output/
+runs/
+checkpoints/
+results/**/*.csv
+results/**/*.md
+results/figures/
+
+# Generated sparse/degradation manifests
+splits/*.json
+degradations/*.json
+
+# Editors and operating systems
+.vscode/
+.DS_Store
+Thumbs.db

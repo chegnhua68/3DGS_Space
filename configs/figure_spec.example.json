@@ -1,0 +1,94 @@
+{
+  "schema_version": 1,
+  "kind": "thermal-figure-spec",
+  "output_dir": "../results/figures",
+  "dpi": 200,
+  "image_comparison": {
+    "filenames": [
+      "00000.png",
+      "00001.png",
+      "00002.png"
+    ],
+    "ground_truth_label": "Ground truth",
+    "methods": [
+      {
+        "label": "Baseline",
+        "method_dir": "../runs/baseline_sparse25_noise03/test/ours_30000"
+      },
+      {
+        "label": "Proposed",
+        "method_dir": "../runs/ours_sparse25_noise03/test/ours_30000"
+      }
+    ],
+    "qualitative": {
+      "output": "qualitative_comparison.png"
+    },
+    "absolute_error": {
+      "output": "absolute_error_maps.png",
+      "cmap": "magma",
+      "vmin": 0.0,
+      "vmax": 0.25,
+      "colorbar_label": "Absolute normalized intensity error"
+    },
+    "edge": {
+      "output": "thermal_edge_comparison.png",
+      "operator": "sobel",
+      "cmap": "gray",
+      "vmin": 0.0,
+      "vmax": 0.5,
+      "colorbar_label": "Sobel magnitude"
+    }
+  },
+  "sparse_view_curve": {
+    "output": "sparse_view_performance.png",
+    "title": "Sparse-view performance",
+    "metrics_csv": "../results/metrics_summary.csv",
+    "y_field": "psnr",
+    "x_label": "Training views (%)",
+    "y_label": "PSNR (dB)",
+    "series": [
+      {
+        "label": "Baseline",
+        "points": [
+          {"x": 12.5, "experiment": "baseline_sparse12p5"},
+          {"x": 25.0, "experiment": "baseline_sparse25"},
+          {"x": 50.0, "experiment": "baseline_sparse50"},
+          {"x": 100.0, "experiment": "baseline_full"}
+        ]
+      },
+      {
+        "label": "Proposed",
+        "points": [
+          {"x": 12.5, "experiment": "ours_sparse12p5"},
+          {"x": 25.0, "experiment": "ours_sparse25"},
+          {"x": 50.0, "experiment": "ours_sparse50"},
+          {"x": 100.0, "experiment": "ours_full"}
+        ]
+      }
+    ]
+  },
+  "degradation_curve": {
+    "output": "degradation_robustness.png",
+    "title": "Gaussian-noise robustness",
+    "metrics_csv": "../results/metrics_summary.csv",
+    "y_field": "psnr",
+    "x_label": "Training-noise sigma",
+    "y_label": "PSNR (dB)",
+    "series": [
+      {
+        "label": "Baseline",
+        "points": [
+          {"x": 0.0, "experiment": "baseline_full"},
+          {"x": 0.03, "experiment": "baseline_noise03"}
+        ]
+      },
+      {
+        "label": "Proposed",
+        "points": [
+          {"x": 0.0, "experiment": "ours_full"},
+          {"x": 0.03, "experiment": "ours_noise03"}
+        ]
+      }
+    ]
+  }
+}

@@ -18,9 +18,7 @@ from scene.colmap_loader import read_extrinsics_text, read_intrinsics_text, qvec
 from utils.graphics_utils import getWorld2View2, focal2fov, fov2focal
 import numpy as np
 import json
-import imageio
 from glob import glob
-import cv2 as cv
 from pathlib import Path
 from plyfile import PlyData, PlyElement
 from utils.sh_utils import SH2RGB
@@ -52,6 +50,8 @@ class SceneInfo(NamedTuple):
 
 
 def load_K_Rt_from_P(filename, P=None):
+    import cv2 as cv
+
     if P is None:
         lines = open(filename).read().splitlines()
         if len(lines) == 4:
@@ -98,9 +98,31 @@ def getNerfppNorm(cam_info):
     return {"translate": translate, "radius": radius}
 
 
-def readColmapCameras(cam_extrinsics, cam_intrinsics, images_folder):
+def readColmapCameras(cam_extrinsics, cam_intrinsics, images_folder, selection=None):
     cam_infos = []
     num_frames = len(cam_extrinsics)
+    denominator = max(num_frames - 1, 1)
+    ordered_names = sorted(
+        os.path.basename(cam_extrinsics[key].name).split(".")[0]
+        for key in cam_extrinsics
+    )
+    fallback_frame_index = {
+        image_name: index for index, image_name in enumerate(ordered_names)
+    }
+    seen_camera_refs = set()
+    if selection is not None:
+        available_camera_refs = {
+            extrinsic.name.replace("\\", "/")
+            for extrinsic in cam_extrinsics.values()
+        }
+        missing = selection.dataset_camera_refs - available_camera_refs
+        unexpected = available_camera_refs - selection.dataset_camera_refs
+        if missing or unexpected:
+            raise ValueError(
+                "dataset manifest and COLMAP camera sets differ; missing={}, unexpected={}".format(
+                    sorted(missing), sorted(unexpected)
+                )
+            )
     for idx, key in enumerate(cam_extrinsics):
         sys.stdout.write('\r')
         # the exact output you're looking for:
@@ -109,6 +131,9 @@ def readColmapCameras(cam_extrinsics, cam_intrinsics, images_folder):
         sys.stdout.flush()
 
         extr = cam_extrinsics[key]
+        camera_ref = extr.name.replace("\\", "/")
+        if selection is not None and camera_ref not in selection.active_camera_refs:
+            continue
         intr = cam_intrinsics[extr.camera_id]
         height = intr.height
         width = intr.width
@@ -129,21 +154,51 @@ def readColmapCameras(cam_extrinsics, cam_intrinsics, images_folder):
         else:
             assert False, "Colmap camera model not handled: only undistorted datasets (PINHOLE or SIMPLE_PINHOLE cameras) supported!"
 
-        image_path = os.path.join(images_folder, os.path.basename(extr.name))
-        image_name = os.path.basename(image_path).split(".")[0]
-        image = Image.open(image_path)
+        if selection is None:
+            image_path = os.path.join(images_folder, os.path.basename(extr.name))
+            image_name = os.path.basename(image_path).split(".")[0]
+        else:
+            image_path = str(selection.path_by_camera_ref[camera_ref])
+            image_name = selection.view_id_by_camera_ref[camera_ref]
+            seen_camera_refs.add(camera_ref)
+        with Image.open(image_path) as source_image:
+            if selection is not None and source_image.mode not in (
+                "L",
+                "LA",
+                "RGB",
+                "RGBA",
+            ):
+                raise ValueError(
+                    "manifest-backed Thermal3D-GS training requires an 8-bit "
+                    "grayscale or RGB image; got mode {!r} for {}".format(
+                        source_image.mode, image_path
+                    )
+                )
+            image = source_image.convert("RGB")
         # cq: IR34D
         #fid = int(image_name) / (num_frames - 1)
-        if image_name[0] == 's':
-            if image_name[1] == '1':
-                fid = int(image_name[3:]) / (num_frames - 1)
-            else:
-                fid = (int(image_name[3:])+486) / (num_frames - 1)   
+        if selection is not None:
+            fid = selection.fid_by_camera_ref[camera_ref]
+        elif image_name.startswith("s1_"):
+            fid = int(image_name[3:]) / denominator
+        elif image_name.startswith("s2_"):
+            fid = (int(image_name[3:]) + 486) / denominator
         else:
-            fid = int(image_name) / (num_frames - 1)
+            try:
+                fid = int(image_name) / denominator
+            except ValueError:
+                fid = fallback_frame_index[image_name] / denominator
         cam_info = CameraInfo(uid=uid, R=R, T=T, FovY=FovY, FovX=FovX, image=image,
                               image_path=image_path, image_name=image_name, width=width, height=height, fid=fid)
         cam_infos.append(cam_info)
+    if selection is not None:
+        missing = selection.active_camera_refs - seen_camera_refs
+        if missing:
+            raise ValueError(
+                "manifest camera_ref values are missing from COLMAP: {}".format(
+                    ", ".join(sorted(missing))
+                )
+            )
     sys.stdout.write('\n')
     return cam_infos
 
@@ -176,7 +231,16 @@ def storePly(path, xyz, rgb):
     ply_data.write(path)
 
 
-def readColmapSceneInfo(path, images, eval, llffhold=8):
+def readColmapSceneInfo(
+    path,
+    images,
+    eval,
+    llffhold=8,
+    dataset_manifest="",
+    split_manifest="",
+    degradation_manifest="",
+    evaluation_partition="test",
+):
     try:
         cameras_extrinsic_file = os.path.join(path, "sparse/0", "images.bin")
         cameras_intrinsic_file = os.path.join(path, "sparse/0", "cameras.bin")
@@ -188,12 +252,40 @@ def readColmapSceneInfo(path, images, eval, llffhold=8):
         cam_extrinsics = read_extrinsics_text(cameras_extrinsic_file)
         cam_intrinsics = read_intrinsics_text(cameras_intrinsic_file)
 
+    if bool(dataset_manifest) != bool(split_manifest):
+        raise ValueError(
+            "dataset_manifest and split_manifest must be provided together"
+        )
+    if degradation_manifest and not dataset_manifest:
+        raise ValueError(
+            "degradation_manifest requires dataset_manifest and split_manifest"
+        )
+    selection = None
+    if dataset_manifest:
+        from integrations.thermal3dgs import load_colmap_selection
+
+        selection = load_colmap_selection(
+            dataset_manifest,
+            split_manifest,
+            degradation_manifest or None,
+            evaluation_partition=evaluation_partition,
+        )
+
     reading_dir = "images" if images == None else images
     cam_infos_unsorted = readColmapCameras(cam_extrinsics=cam_extrinsics, cam_intrinsics=cam_intrinsics,
-                                           images_folder=os.path.join(path, reading_dir))
+                                           images_folder=os.path.join(path, reading_dir),
+                                           selection=selection)
     cam_infos = sorted(cam_infos_unsorted.copy(), key=lambda x: x.image_name)
 
-    if eval:
+    if selection is not None:
+        cameras_by_view_id = {camera.image_name: camera for camera in cam_infos}
+        train_cam_infos = [
+            cameras_by_view_id[view_id] for view_id in selection.train_view_ids
+        ]
+        test_cam_infos = [
+            cameras_by_view_id[view_id] for view_id in selection.test_view_ids
+        ]
+    elif eval:
         train_cam_infos = [c for idx, c in enumerate(
             cam_infos) if idx % llffhold != 0]
         test_cam_infos = [c for idx, c in enumerate(
@@ -314,6 +406,8 @@ def readNerfSyntheticInfo(path, white_background, eval, extension=".png"):
 
 
 def readDTUCameras(path, render_camera, object_camera):
+    import imageio
+
     camera_dict = np.load(os.path.join(path, render_camera))
     images_lis = sorted(glob(os.path.join(path, 'image/*.png')))
     masks_lis = sorted(glob(os.path.join(path, 'mask/*.png')))

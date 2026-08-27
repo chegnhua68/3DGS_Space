@@ -20,20 +20,21 @@ def l1_loss(network_output, gt):
 
 # cq:
 def find_corners(img):
-    inputs = img.unsqueeze(0)*255
+    if img.ndim != 3:
+        raise ValueError("find_corners expects an image with shape (C,H,W)")
+    inputs = img.mean(dim=0, keepdim=True).unsqueeze(0) * 255
     sobel_x = torch.tensor([[-1, -2, -1],
                         [0, 0, 0],
-                        [1, 2, 1]], dtype=torch.float, requires_grad=False).view(1, 1, 3, 3).cuda().repeat(1,3,1,1)
+                        [1, 2, 1]], dtype=img.dtype, device=img.device).view(1, 1, 3, 3)
     sobel_y = torch.tensor([[-1, 0, 1],
                         [-2, 0, 2],
-                        [-1, 0, 1]], dtype=torch.float, requires_grad=False).view(1, 1, 3, 3).cuda().repeat(1,3,1,1)
+                        [-1, 0, 1]], dtype=img.dtype, device=img.device).view(1, 1, 3, 3)
     I_x = F.conv2d(inputs, sobel_x, stride=1, padding=1,)
     I_y = F.conv2d(inputs, sobel_y, stride=1, padding=1,)
     k = 0.04
-    I_x_squared = I_x * I_x
-    I_y_squared = I_y * I_y
-
-    I_x_y = I_x * I_y
+    I_x_squared = F.avg_pool2d(I_x * I_x, kernel_size=3, stride=1, padding=1)
+    I_y_squared = F.avg_pool2d(I_y * I_y, kernel_size=3, stride=1, padding=1)
+    I_x_y = F.avg_pool2d(I_x * I_y, kernel_size=3, stride=1, padding=1)
     
     det_M = I_x_squared * I_y_squared - I_x_y* I_x_y
     trace_M = I_x_squared + I_y_squared
@@ -42,12 +43,14 @@ def find_corners(img):
     
 # cq:
 def corners_loss(network_output, gt):
-    R = find_corners(network_output).repeat(1,3,1,1).squeeze(0)
-    max_vals = R.max()
-    torch.clamp(R, min=0.01*max_vals) 
-    R_exp = torch.exp(R)
-    R_exp = R_exp/R_exp.max()
-    return (torch.abs((network_output - gt))*(R_exp)).mean()
+    if network_output.shape != gt.shape:
+        raise ValueError("network_output and gt must have identical shapes")
+    R = find_corners(network_output)
+    # exp(R) / max(exp(R)) is equivalent to exp(R - max(R)), but the
+    # latter cannot underflow to an all-zero map before normalization.
+    weights = torch.exp(R - R.max()).squeeze(0)
+    weights = weights.expand_as(network_output)
+    return (torch.abs(network_output - gt) * weights).mean()
 
 def kl_divergence(rho, rho_hat):
     rho_hat = torch.mean(torch.sigmoid(rho_hat), 0)

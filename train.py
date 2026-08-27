@@ -10,11 +10,12 @@
 #
 
 import os
-os.environ["CUDA_VISIBLE_DEVICES"] = "1"
+import math
 import torch
 from random import randint
 # cq:import corners_loss
 from utils.loss_utils import l1_loss, ssim, kl_divergence, corners_loss
+from losses.thermal_physics_loss import thermal_physics_loss
 from gaussian_renderer import render, network_gui
 import sys
 from scene import Scene, GaussianModel, ATFModel, TCMModel
@@ -33,8 +34,14 @@ except ImportError:
     TENSORBOARD_FOUND = False
 
 #os.environ["CUDA_VISIBLE_DEVICES"] = "0"
-def training(dataset, opt, pipe, testing_iterations, saving_iterations):
-    tb_writer = prepare_output_and_logger(dataset)
+def training(dataset, opt, pipe, testing_iterations, saving_iterations, run_config=None):
+    thermal_weights = (opt.lambda_thermal, opt.lambda_edge, opt.lambda_smooth)
+    thermal_parameters = thermal_weights + (opt.noise_beta, opt.edge_gamma)
+    if not all(math.isfinite(value) for value in thermal_parameters):
+        raise ValueError("thermal loss parameters must be finite")
+    if any(weight < 0 for weight in thermal_parameters):
+        raise ValueError("thermal loss parameters must be non-negative")
+    tb_writer = prepare_output_and_logger(dataset, run_config)
     gaussians = GaussianModel(dataset.sh_degree)
     ATF = ATFModel(dataset.is_blender)
     ATF.train_setting(opt)
@@ -57,6 +64,9 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations):
     best_iteration = 0
     progress_bar = tqdm(range(opt.iterations), desc="Training progress")
     smooth_term = get_linear_noise_func(lr_init=0.1, lr_final=1e-15, lr_delay_mult=0.01, max_steps=20000)
+    thermal_loss_enabled = any(
+        weight > 0 for weight in thermal_weights
+    )
     for iteration in range(1, opt.iterations + 1):
         if network_gui.conn == None:
             network_gui.try_connect()
@@ -137,6 +147,18 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations):
             loss = (1.0 - opt.lambda_dssim -0.2) * (Ll1) + opt.lambda_dssim * (1.0 - ssim(image, gt_image)) + 0.2*c_loss*max(1-iteration/5000,0)
         else:
             loss = (1.0 - opt.lambda_dssim) * (Ll1) + opt.lambda_dssim * (1.0 - ssim(image, gt_image))
+        thermal_terms = None
+        if thermal_loss_enabled:
+            thermal_extra, thermal_terms = thermal_physics_loss(
+                image,
+                gt_image,
+                lambda_thermal=opt.lambda_thermal,
+                lambda_edge=opt.lambda_edge,
+                lambda_smooth=opt.lambda_smooth,
+                noise_beta=opt.noise_beta,
+                edge_gamma=opt.edge_gamma,
+            )
+            loss = loss + thermal_extra
         loss.backward()
 
         iter_end.record()
@@ -161,6 +183,10 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations):
             cur_psnr = training_report(tb_writer, iteration, Ll1, loss, l1_loss, iter_start.elapsed_time(iter_end),
                                        testing_iterations, scene, render, (pipe, background), ATF,
                                        TCM, dataset.load2gpu_on_the_fly)
+            if tb_writer and thermal_terms is not None:
+                tb_writer.add_scalar("train_loss/thermal_weighted", thermal_extra.item(), iteration)
+                for name, value in thermal_terms.items():
+                    tb_writer.add_scalar("train_loss/" + name, value.item(), iteration)
             if iteration in testing_iterations:
                 if cur_psnr.item() > best_psnr:
                     best_psnr = cur_psnr.item()
@@ -169,8 +195,8 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations):
             if iteration in saving_iterations:
                 print("\n[ITER {}] Saving Gaussians".format(iteration))
                 scene.save(iteration)
-                ATF.save_weights(args.model_path, iteration)
-                TCM.save_weights(args.model_path, iteration)
+                ATF.save_weights(scene.model_path, iteration)
+                TCM.save_weights(scene.model_path, iteration)
 
             # Densification
             if iteration < opt.densify_until_iter:
@@ -199,7 +225,7 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations):
     print("Best PSNR = {} in Iteration {}".format(best_psnr, best_iteration))
 
 
-def prepare_output_and_logger(args):
+def prepare_output_and_logger(args, run_config=None):
     if not args.model_path:
         if os.getenv('OAR_JOB_ID'):
             unique_str = os.getenv('OAR_JOB_ID')
@@ -210,8 +236,12 @@ def prepare_output_and_logger(args):
     # Set up output folder
     print("Output folder: {}".format(args.model_path))
     os.makedirs(args.model_path, exist_ok=True)
-    with open(os.path.join(args.model_path, "cfg_args"), 'w') as cfg_log_f:
-        cfg_log_f.write(str(Namespace(**vars(args))))
+    recorded_args = vars(run_config).copy() if run_config is not None else {}
+    recorded_args.update(vars(args))
+    with open(
+        os.path.join(args.model_path, "cfg_args"), 'w', encoding="utf-8"
+    ) as cfg_log_f:
+        cfg_log_f.write(str(Namespace(**recorded_args)))
 
     # Create Tensorboard writer
     tb_writer = None
@@ -329,7 +359,14 @@ if __name__ == "__main__":
     # Start GUI server, configure and run training
     # network_gui.init(args.ip, args.port)
     torch.autograd.set_detect_anomaly(args.detect_anomaly)
-    training(lp.extract(args), op.extract(args), pp.extract(args), args.test_iterations, args.save_iterations)
+    training(
+        lp.extract(args),
+        op.extract(args),
+        pp.extract(args),
+        args.test_iterations,
+        args.save_iterations,
+        run_config=args,
+    )
 
     # All done
     print("\nTraining complete.")

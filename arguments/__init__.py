@@ -10,12 +10,23 @@
 #
 
 from argparse import ArgumentParser, Namespace
+import ast
 import sys
 import os
 
 
 class GroupParams:
     pass
+
+
+def evaluation_output_name(dataset_manifest, evaluation_partition):
+    """Return the on-disk name for the selected held-out partition."""
+
+    if not dataset_manifest:
+        return "test"
+    if evaluation_partition not in ("val", "test"):
+        raise ValueError("evaluation_partition must be 'val' or 'test'")
+    return evaluation_partition
 
 
 class ParamGroup:
@@ -53,6 +64,10 @@ class ModelParams(ParamGroup):
         self._source_path = ""
         self._model_path = ""
         self._images = "images"
+        self.dataset_manifest = ""
+        self.split_manifest = ""
+        self.degradation_manifest = ""
+        self.evaluation_partition = "test"
         self._resolution = -1
         self._white_background = False
         self.data_device = "cuda"
@@ -64,6 +79,10 @@ class ModelParams(ParamGroup):
     def extract(self, args):
         g = super().extract(args)
         g.source_path = os.path.abspath(g.source_path)
+        for name in ("dataset_manifest", "split_manifest", "degradation_manifest"):
+            value = getattr(g, name, None)
+            if value:
+                setattr(g, name, os.path.abspath(value))
         return g
 
 
@@ -91,12 +110,43 @@ class OptimizationParams(ParamGroup):
         self.rotation_lr = 0.001
         self.percent_dense = 0.01
         self.lambda_dssim = 0.2
+        self.lambda_thermal = 0.0
+        self.lambda_edge = 0.0
+        self.lambda_smooth = 0.0
+        self.noise_beta = 5.0
+        self.edge_gamma = 3.0
         self.densification_interval = 100
         self.opacity_reset_interval = 3000
         self.densify_from_iter = 500
         self.densify_until_iter = 15_000
         self.densify_grad_threshold = 0.0002
         super().__init__(parser, "Optimization Parameters")
+
+
+def _parse_cfg_namespace(value):
+    """Parse the project's Namespace(...) config format without executing it."""
+    try:
+        expression = ast.parse(value, mode="eval").body
+    except SyntaxError as exc:
+        raise ValueError("cfg_args is not valid Python syntax") from exc
+    if not (
+        isinstance(expression, ast.Call)
+        and isinstance(expression.func, ast.Name)
+        and expression.func.id == "Namespace"
+        and not expression.args
+    ):
+        raise ValueError("cfg_args must contain a single Namespace(...) expression")
+    values = {}
+    for keyword in expression.keywords:
+        if keyword.arg is None or keyword.arg in values:
+            raise ValueError("cfg_args contains invalid or duplicate fields")
+        try:
+            values[keyword.arg] = ast.literal_eval(keyword.value)
+        except (ValueError, TypeError) as exc:
+            raise ValueError(
+                "cfg_args field {!r} is not a literal".format(keyword.arg)
+            ) from exc
+    return Namespace(**values)
 
 
 def get_combined_args(parser: ArgumentParser):
@@ -107,13 +157,13 @@ def get_combined_args(parser: ArgumentParser):
     try:
         cfgfilepath = os.path.join(args_cmdline.model_path, "cfg_args")
         print("Looking for config file in", cfgfilepath)
-        with open(cfgfilepath) as cfg_file:
+        with open(cfgfilepath, encoding="utf-8") as cfg_file:
             print("Config file found: {}".format(cfgfilepath))
             cfgfile_string = cfg_file.read()
     except TypeError:
         print("Config file not found at")
         pass
-    args_cfgfile = eval(cfgfile_string)
+    args_cfgfile = _parse_cfg_namespace(cfgfile_string)
 
     merged_dict = vars(args_cfgfile).copy()
     for k, v in vars(args_cmdline).items():

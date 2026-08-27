@@ -19,7 +19,12 @@ import torchvision
 from utils.general_utils import safe_state
 from utils.pose_utils import pose_spherical, render_wander_path
 from argparse import ArgumentParser
-from arguments import ModelParams, PipelineParams, get_combined_args
+from arguments import (
+    ModelParams,
+    PipelineParams,
+    evaluation_output_name,
+    get_combined_args,
+)
 from gaussian_renderer import GaussianModel
 import imageio
 import numpy as np
@@ -27,7 +32,7 @@ import math
 import time
 
 
-def render_set(model_path, load2gpt_on_the_fly, name, iteration, views, gaussians, pipeline, background, ATF, TCM):
+def render_set(model_path, load2gpu_on_the_fly, name, iteration, views, gaussians, pipeline, background, ATF, TCM):
     render_path = os.path.join(model_path, name, "ours_{}".format(iteration), "renders")
     gts_path = os.path.join(model_path, name, "ours_{}".format(iteration), "gt")
     depth_path = os.path.join(model_path, name, "ours_{}".format(iteration), "depth")
@@ -38,8 +43,8 @@ def render_set(model_path, load2gpt_on_the_fly, name, iteration, views, gaussian
     render_time_list = []
 
     for idx, view in enumerate(tqdm(views, desc="Rendering progress")):
-        if load2gpt_on_the_fly:
-            view.load2gpu()
+        if load2gpu_on_the_fly:
+            view.load2device()
         fid = view.fid
         xyz = gaussians.get_xyz
         time_input = fid.unsqueeze(0).expand(xyz.shape[0], -1)
@@ -58,11 +63,18 @@ def render_set(model_path, load2gpt_on_the_fly, name, iteration, views, gaussian
         gt = view.original_image[0:3, :, :]
         torchvision.utils.save_image(rendering, os.path.join(render_path, '{0:05d}'.format(idx) + ".png"))
         torchvision.utils.save_image(gt, os.path.join(gts_path, '{0:05d}'.format(idx) + ".png"))
+        if load2gpu_on_the_fly:
+            view.load2device('cpu')
         
-    with open(os.path.join(model_path, name, 'ours_30000','render_time.txt'), 'w') as f:
+    timing_path = os.path.join(
+        model_path, name, "ours_{}".format(iteration), "render_time.txt"
+    )
+    with open(timing_path, 'w') as f:
         for t in render_time_list:
             f.write("%.2fms\n"%t)
-        f.write("Mean time: %.2fms\n"%(np.mean(render_time_list[5:])))
+        timing_samples = render_time_list[5:] or render_time_list
+        if timing_samples:
+            f.write("Mean time: %.2fms\n" % np.mean(timing_samples))
 
 
 def interpolate_time(model_path, load2gpt_on_the_fly, name, iteration, views, gaussians, pipeline, background, ATF, TCM):
@@ -198,25 +210,20 @@ def render_sets(dataset: ModelParams, iteration: int, pipeline: PipelineParams, 
         gaussians = GaussianModel(dataset.sh_degree)
         scene = Scene(dataset, gaussians, load_iteration=iteration, shuffle=False)
         ATF = ATFModel(dataset.is_blender)
-        ATF.load_weights(dataset.model_path)
+        ATF.load_weights(dataset.model_path, scene.loaded_iter)
         TCM = TCMModel()
-        TCM.load_weights(dataset.model_path)
+        TCM.load_weights(dataset.model_path, scene.loaded_iter)
 
         bg_color = [1, 1, 1] if dataset.white_background else [0, 0, 0]
         background = torch.tensor(bg_color, dtype=torch.float32, device="cuda")
 
-        if mode == "render":
-            render_func = render_set
-        elif mode == "time":
-            render_func = interpolate_time
-        elif mode == "view":
-            render_func = interpolate_view
-        elif mode == "pose":
-            render_func = interpolate_poses
-        elif mode == "original":
-            render_func = interpolate_view_original
-        else:
-            render_func = interpolate_all
+        render_functions = {
+            "render": render_set,
+            "time": interpolate_time,
+            "all": interpolate_all,
+            "original": interpolate_view_original,
+        }
+        render_func = render_functions[mode]
 
         if not skip_train:
             render_func(dataset.model_path, dataset.load2gpu_on_the_fly, "train", scene.loaded_iter,
@@ -224,7 +231,11 @@ def render_sets(dataset: ModelParams, iteration: int, pipeline: PipelineParams, 
                         background, ATF, TCM)
 
         if not skip_test:
-            render_func(dataset.model_path, dataset.load2gpu_on_the_fly, "test", scene.loaded_iter,
+            output_name = evaluation_output_name(
+                getattr(dataset, "dataset_manifest", ""),
+                getattr(dataset, "evaluation_partition", "test"),
+            )
+            render_func(dataset.model_path, dataset.load2gpu_on_the_fly, output_name, scene.loaded_iter,
                         scene.getTestCameras(), gaussians, pipeline,
                         background, ATF, TCM)
 
@@ -238,7 +249,9 @@ if __name__ == "__main__":
     parser.add_argument("--skip_train", default=True, action="store_true")
     parser.add_argument("--skip_test", action="store_true")
     parser.add_argument("--quiet", action="store_true")
-    parser.add_argument("--mode", default='render', choices=['render', 'time', 'view', 'all', 'pose', 'original'])
+    parser.add_argument(
+        "--mode", default='render', choices=['render', 'time', 'all', 'original']
+    )
     args = get_combined_args(parser)
     print("Rendering " + args.model_path)
 

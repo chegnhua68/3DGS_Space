@@ -42,7 +42,11 @@ class TCMModel:
         else:
             loaded_iter = iteration
         weights_path = os.path.join(model_path, "TCM/iteration_{}/TCM.pth".format(loaded_iter))
-        self.TCM.load_state_dict(torch.load(weights_path))
+        try:
+            state_dict = torch.load(weights_path, weights_only=True)
+        except TypeError:
+            state_dict = torch.load(weights_path)
+        self.TCM.load_state_dict(state_dict)
 
     def update_learning_rate(self, iteration):
         for param_group in self.optimizer.param_groups:

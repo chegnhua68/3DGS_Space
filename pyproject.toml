@@ -1,0 +1,22 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "thermal3dgs-sparse-ir"
+version = "0.1.0"
+description = "Reproducible sparse-view and degraded-infrared experiments for Thermal3D-GS"
+requires-python = ">=3.7,<3.12"
+dependencies = [
+    "numpy>=1.21,<3",
+    "Pillow>=8,<13",
+]
+
+[project.optional-dependencies]
+figures = ["matplotlib>=3.5,<4"]
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

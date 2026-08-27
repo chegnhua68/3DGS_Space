@@ -1,0 +1,65 @@
+{
+  "schema_version": 1,
+  "source_path": "data/TI-NSD/heated",
+  "dataset_manifest": "data/TI-NSD/heated/dataset_manifest.v1.json",
+  "output_root": "runs/smoke_noise03_pair",
+  "common_args": {
+    "data_device": "cpu",
+    "evaluation_partition": "val",
+    "eval": true,
+    "iterations": 10,
+    "load2gpu_on_the_fly": true,
+    "quiet": true,
+    "resolution": 4,
+    "save_iterations": [
+      10
+    ],
+    "test_iterations": [
+      10
+    ]
+  },
+  "experiments": [
+    {
+      "name": "baseline_sparse12p5_noise03",
+      "split_manifest": "data/TI-NSD/heated/splits/seed2026/sparse_nested-random_12p5.json",
+      "degradation_manifest": "data/TI-NSD/heated/derived/noise03_12p5_seed2026/degradation_manifest.v1.json",
+      "args": {
+        "edge_gamma": 3,
+        "lambda_edge": 0.0,
+        "lambda_smooth": 0.0,
+        "lambda_thermal": 0.0,
+        "noise_beta": 5
+      }
+    },
+    {
+      "name": "proposed_sparse12p5_noise03",
+      "split_manifest": "data/TI-NSD/heated/splits/seed2026/sparse_nested-random_12p5.json",
+      "degradation_manifest": "data/TI-NSD/heated/derived/noise03_12p5_seed2026/degradation_manifest.v1.json",
+      "args": {
+        "edge_gamma": 3,
+        "lambda_edge": 0.01,
+        "lambda_smooth": 0.001,
+        "lambda_thermal": 0.1,
+        "noise_beta": 5
+      }
+    },
+    {
+      "name": "baseline_fullviews_r1_100",
+      "split_manifest": "data/TI-NSD/heated/splits/seed2026/sparse_nested-random_100.json",
+      "degradation_manifest": null,
+      "args": {
+        "iterations": 100,
+        "lambda_edge": 0.0,
+        "lambda_smooth": 0.0,
+        "lambda_thermal": 0.0,
+        "resolution": 1,
+        "save_iterations": [
+          100
+        ],
+        "test_iterations": [
+          100
+        ]
+      }
+    }
+  ]
+}

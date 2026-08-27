@@ -1,0 +1,123 @@
+{
+  "schema_version": 1,
+  "source_path": "${THERMAL_DATASET_ROOT}",
+  "dataset_manifest": "${THERMAL_DATASET_ROOT}/dataset_manifest.v1.json",
+  "output_root": "runs",
+  "common_args": {
+    "data_device": "cpu",
+    "evaluation_partition": "val",
+    "eval": true,
+    "iterations": 30000,
+    "load2gpu_on_the_fly": true
+  },
+  "experiments": [
+    {
+      "name": "baseline_full",
+      "split_manifest": "${THERMAL_SPLIT_DIR}/sparse_nested-random_100.json",
+      "degradation_manifest": null,
+      "args": {}
+    },
+    {
+      "name": "baseline_sparse50",
+      "split_manifest": "${THERMAL_SPLIT_DIR}/sparse_nested-random_50.json",
+      "degradation_manifest": null,
+      "args": {}
+    },
+    {
+      "name": "baseline_sparse25",
+      "split_manifest": "${THERMAL_SPLIT_DIR}/sparse_nested-random_25.json",
+      "degradation_manifest": null,
+      "args": {}
+    },
+    {
+      "name": "baseline_sparse12p5",
+      "split_manifest": "${THERMAL_SPLIT_DIR}/sparse_nested-random_12p5.json",
+      "degradation_manifest": null,
+      "args": {}
+    },
+    {
+      "name": "ours_full",
+      "split_manifest": "${THERMAL_SPLIT_DIR}/sparse_nested-random_100.json",
+      "degradation_manifest": null,
+      "args": {
+        "lambda_thermal": 0.1,
+        "lambda_edge": 0.01,
+        "lambda_smooth": 0.001,
+        "noise_beta": 5,
+        "edge_gamma": 3
+      }
+    },
+    {
+      "name": "ours_sparse50",
+      "split_manifest": "${THERMAL_SPLIT_DIR}/sparse_nested-random_50.json",
+      "degradation_manifest": null,
+      "args": {
+        "lambda_thermal": 0.1,
+        "lambda_edge": 0.01,
+        "lambda_smooth": 0.001,
+        "noise_beta": 5,
+        "edge_gamma": 3
+      }
+    },
+    {
+      "name": "ours_sparse25",
+      "split_manifest": "${THERMAL_SPLIT_DIR}/sparse_nested-random_25.json",
+      "degradation_manifest": null,
+      "args": {
+        "lambda_thermal": 0.1,
+        "lambda_edge": 0.01,
+        "lambda_smooth": 0.001,
+        "noise_beta": 5,
+        "edge_gamma": 3
+      }
+    },
+    {
+      "name": "ours_sparse12p5",
+      "split_manifest": "${THERMAL_SPLIT_DIR}/sparse_nested-random_12p5.json",
+      "degradation_manifest": null,
+      "args": {
+        "lambda_thermal": 0.1,
+        "lambda_edge": 0.01,
+        "lambda_smooth": 0.001,
+        "noise_beta": 5,
+        "edge_gamma": 3
+      }
+    },
+    {
+      "name": "baseline_noise03",
+      "split_manifest": "${THERMAL_SPLIT_DIR}/sparse_nested-random_100.json",
+      "degradation_manifest": "${THERMAL_DEGRADATION_DIR}/noise03_full/degradation_manifest.v1.json",
+      "args": {}
+    },
+    {
+      "name": "ours_noise03",
+      "split_manifest": "${THERMAL_SPLIT_DIR}/sparse_nested-random_100.json",
+      "degradation_manifest": "${THERMAL_DEGRADATION_DIR}/noise03_full/degradation_manifest.v1.json",
+      "args": {
+        "lambda_thermal": 0.1,
+        "lambda_edge": 0.01,
+        "lambda_smooth": 0.001,
+        "noise_beta": 5,
+        "edge_gamma": 3
+      }
+    },
+    {
+      "name": "baseline_sparse25_noise03",
+      "split_manifest": "${THERMAL_SPLIT_DIR}/sparse_nested-random_25.json",
+      "degradation_manifest": "${THERMAL_DEGRADATION_DIR}/noise03_sparse25/degradation_manifest.v1.json",
+      "args": {}
+    },
+    {
+      "name": "ours_sparse25_noise03",
+      "split_manifest": "${THERMAL_SPLIT_DIR}/sparse_nested-random_25.json",
+      "degradation_manifest": "${THERMAL_DEGRADATION_DIR}/noise03_sparse25/degradation_manifest.v1.json",
+      "args": {
+        "lambda_thermal": 0.1,
+        "lambda_edge": 0.01,
+        "lambda_smooth": 0.001,
+        "noise_beta": 5,
+        "edge_gamma": 3
+      }
+    }
+  ]
+}

@@ -1,3 +1,131 @@
+# Thermal3D-GS Sparse-View Infrared Extension
+
+[中文系统说明](README_zh-CN.md)
+
+This branch builds a reproducible sparse-view and degraded-infrared evaluation
+protocol on top of the official Thermal3D-GS code. The pinned upstream revision
+is `03366b2a350ac5db6690dfd7fca51a56ba9e89a7`; provenance and known baseline
+limitations are recorded in [docs/upstream_provenance.md](docs/upstream_provenance.md).
+
+The extension adds deterministic nested sparse splits, training-only infrared
+degradations, and an optional noise-aware edge-preserving consistency loss. The
+new loss is disabled by default:
+
+```shell
+python train.py -s <scene> --eval \
+  --lambda_thermal 0 --lambda_edge 0 --lambda_smooth 0
+```
+
+See [docs/experimental_protocol.md](docs/experimental_protocol.md) before
+running experiments. Current reproduction status and host limitations are in
+[docs/experiment_log.md](docs/experiment_log.md).
+
+### Local Python 3.11 environment
+
+This workspace currently uses `.venv\Scripts\python.exe` (Python 3.11.9),
+which inherits the host's PyTorch 2.5.1+cu121 installation. The lightweight
+runtime dependencies have been installed successfully. See
+[docs/python311_environment.md](docs/python311_environment.md) for the exact
+state and verification commands.
+
+The native training path is operational on this host. CUDA Toolkit 12.1
+(`nvcc` 12.1.66) is installed through Scoop, and MSVC v142/14.29
+(`cl` 19.29.30159) is installed side by side in the existing Visual Studio
+Build Tools 2026 instance. Both `diff_gaussian_rasterization` and `simple_knn`
+are built for Python 3.11 and import successfully. The toolchain is kept under
+`E:\Software` and activated per build shell; it is intentionally not added to
+the global environment.
+
+The public TI-NSD `heated` scene (307 views) is available locally. A sparse
+baseline smoke train/render/metric pass and a degraded proposed-loss pass have
+both completed at 10 iterations. These runs validate the end-to-end pipeline
+only: no upstream pretrained checkpoint or full 7k/30k result has been
+downloaded or reproduced yet. See
+[docs/experiment_log.md](docs/experiment_log.md).
+
+### Reproducible sparse/degraded workflow
+
+The dataset manifest is stored in the COLMAP scene root so all image paths stay
+relative and portable. Its `data_range` describes the encoded image-intensity
+range. The offline degradation tool accepts uint8 JPEG/PNG/TIFF and uint16
+PNG/TIFF sources, and always writes derived images as lossless PNG or TIFF.
+This pinned Thermal3D-GS trainer is restricted to `0 255` uint8 input;
+degradation noise sigma is applied after that fixed range is mapped to `[0,1]`.
+
+```shell
+# 1. Freeze the official every-eighth-frame test set and a disjoint validation set.
+.venv/Scripts/python tools/create_colmap_manifest.py \
+  --dataset-root <scene> --dataset-id <scene-id> --data-range 0 255 \
+  --test-every 8 --val-every 8
+
+# 2. Generate nested 100/50/25/12.5 percent subsets from train_pool only.
+.venv/Scripts/python tools/create_sparse_split.py \
+  --dataset-manifest <scene>/dataset_manifest.v1.json \
+  --base-split-manifest <scene>/base_split.v1.json \
+  --ratios 1,0.5,0.25,0.125 --method nested-random --seed 2026 \
+  --output-dir splits/seed2026
+
+# 3. Create a training-only low-SNR overlay. Validation and test bytes stay clean.
+.venv/Scripts/python tools/degrade_ir_dataset.py \
+  --dataset-manifest <scene>/dataset_manifest.v1.json \
+  --split-manifest splits/seed2026/sparse_nested-random_25.json \
+  --output-dir data/derived/<scene>/noise03_sparse25 \
+  --degradation gaussian-noise --noise-sigma 0.03 --seed 2026
+
+# 4. Tune on validation views. All new loss terms are opt-in.
+.venv/Scripts/python train.py -s <scene> --eval \
+  --dataset_manifest <scene>/dataset_manifest.v1.json \
+  --split_manifest splits/seed2026/sparse_nested-random_25.json \
+  --degradation_manifest data/derived/<scene>/noise03_sparse25/degradation_manifest.v1.json \
+  --evaluation_partition val -m runs/ours_sparse25_noise03 \
+  --lambda_thermal 0.1 --lambda_edge 0.01 --lambda_smooth 0.001 \
+  --noise_beta 5 --edge_gamma 3
+
+# 5. Render the untouched test partition after hyperparameters are frozen.
+.venv/Scripts/python render.py -m runs/ours_sparse25_noise03 --evaluation_partition test
+```
+
+For a matrix run, set `THERMAL_DATASET_ROOT`, `THERMAL_SPLIT_DIR`, and
+`THERMAL_DEGRADATION_DIR`, then inspect commands before launching:
+
+```shell
+.venv/Scripts/python scripts/run_experiments.py \
+  --matrix configs/experiment_matrix.example.json --dry-run
+```
+
+The runner refuses an existing experiment directory by default and records the
+full commands, input hashes, Git commit, and working-tree diff hash in each
+`run_manifest.json`. It also hashes the content of every tracked or untracked,
+non-ignored source file, so uncommitted new modules are covered by the run
+record rather than only listed by name.
+
+After validation rendering, collect metrics from directories that each contain
+matching `renders/` and `gt/` files:
+
+```shell
+.venv/Scripts/python tools/collect_metrics.py \
+  --experiment baseline_full=runs/baseline_full/val/ours_30000 \
+  --experiment ours_full=runs/ours_full/val/ours_30000 \
+  --experiment baseline_sparse25=runs/baseline_sparse25/val/ours_30000 \
+  --experiment ours_sparse25=runs/ours_sparse25/val/ours_30000 \
+  --output-dir results
+```
+
+Repeat `--experiment` for every curve point referenced by
+`configs/figure_spec.example.json`, then generate all five planned figures:
+
+```shell
+.venv/Scripts/python tools/make_figures.py \
+  --spec configs/figure_spec.example.json
+```
+
+The figure specification fixes filenames, error/edge color scales, metric
+columns, curve coordinates, and experiment labels explicitly. The generator
+rejects mismatched render/ground-truth sets and writes a hash-bearing
+`figure_manifest.json` beside the PNG files.
+
+## Original Thermal3D-GS README
+
 # Thermal3D-GS: Physics-induced 3D Gaussians for Thermal Infrared Novel-view Synthesis
 
 ## News
