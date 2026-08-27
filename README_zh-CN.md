@@ -1,6 +1,6 @@
 # Thermal3D-GS 稀疏视角退化红外重建系统
 
-[English README and upstream documentation](README.md)
+[English README and upstream documentation](README.md) | [完整操作与 GitHub 提交记录](README_OPERATIONS_zh-CN.md)
 
 本项目是在 [Thermal3D-GS](https://github.com/mzzcdf/Thermal3DGS) 上构建的可复现实验系统，面向稀疏视角、低信噪比和弱纹理条件下的红外新视角合成与三维表观红外强度场重建。系统保留上游 Gaussian、ATF 和 TCM 训练路径，同时增加确定性数据划分、仅训练集退化、噪声感知边缘保持损失、严格的验证/测试隔离、指标汇总、论文图生成和实验来源审计。
 
