@@ -32,7 +32,7 @@ import math
 import time
 
 
-def render_set(model_path, load2gpu_on_the_fly, name, iteration, views, gaussians, pipeline, background, ATF, TCM):
+def render_set(model_path, load2gpu_on_the_fly, name, iteration, views, gaussians, pipeline, background, ATF, TCM, quiet=False):
     render_path = os.path.join(model_path, name, "ours_{}".format(iteration), "renders")
     gts_path = os.path.join(model_path, name, "ours_{}".format(iteration), "gt")
     depth_path = os.path.join(model_path, name, "ours_{}".format(iteration), "depth")
@@ -42,7 +42,7 @@ def render_set(model_path, load2gpu_on_the_fly, name, iteration, views, gaussian
     makedirs(depth_path, exist_ok=True)
     render_time_list = []
 
-    for idx, view in enumerate(tqdm(views, desc="Rendering progress")):
+    for idx, view in enumerate(tqdm(views, desc="Rendering", disable=quiet, mininterval=5.0)):
         if load2gpu_on_the_fly:
             view.load2device()
         fid = view.fid
@@ -77,7 +77,7 @@ def render_set(model_path, load2gpu_on_the_fly, name, iteration, views, gaussian
             f.write("Mean time: %.2fms\n" % np.mean(timing_samples))
 
 
-def interpolate_time(model_path, load2gpt_on_the_fly, name, iteration, views, gaussians, pipeline, background, ATF, TCM):
+def interpolate_time(model_path, load2gpt_on_the_fly, name, iteration, views, gaussians, pipeline, background, ATF, TCM, quiet=False):
     render_path = os.path.join(model_path, name, "interpolate_{}".format(iteration), "renders")
     depth_path = os.path.join(model_path, name, "interpolate_{}".format(iteration), "depth")
 
@@ -90,7 +90,7 @@ def interpolate_time(model_path, load2gpt_on_the_fly, name, iteration, views, ga
     idx = torch.randint(0, len(views), (1,)).item()
     view = views[idx]
     renderings = []
-    for t in tqdm(range(0, frame, 1), desc="Rendering progress"):
+    for t in tqdm(range(0, frame, 1), desc="Rendering", disable=quiet, mininterval=5.0):
         fid = torch.Tensor([t / (frame - 1)]).cuda()
         xyz = gaussians.get_xyz
         time_input = fid.unsqueeze(0).expand(xyz.shape[0], -1)
@@ -104,7 +104,7 @@ def interpolate_time(model_path, load2gpt_on_the_fly, name, iteration, views, ga
     imageio.mimwrite(os.path.join(render_path, 'video.mp4'), renderings, fps=30, quality=8)
 
 
-def interpolate_all(model_path, load2gpt_on_the_fly, name, iteration, views, gaussians, pipeline, background, ATF, TCM):
+def interpolate_all(model_path, load2gpt_on_the_fly, name, iteration, views, gaussians, pipeline, background, ATF, TCM, quiet=False):
     render_path = os.path.join(model_path, name, "interpolate_all_{}".format(iteration), "renders")
     makedirs(render_path, exist_ok=True)
 
@@ -118,7 +118,7 @@ def interpolate_all(model_path, load2gpt_on_the_fly, name, iteration, views, gau
     view = views[idx]  # Choose a specific time for rendering
 
     renderings = []
-    for i, pose in enumerate(tqdm(render_poses, desc="Rendering progress")):
+    for i, pose in enumerate(tqdm(render_poses, desc="Rendering", disable=quiet, mininterval=5.0)):
         fid = torch.Tensor([i / (frame - 1)]).cuda()
 
         matrix = np.linalg.inv(np.array(pose))
@@ -144,7 +144,7 @@ def interpolate_all(model_path, load2gpt_on_the_fly, name, iteration, views, gau
     renderings = np.stack(renderings, 0).transpose(0, 2, 3, 1)
     imageio.mimwrite(os.path.join(render_path, 'video.mp4'), renderings, fps=30, quality=8)
 
-def interpolate_view_original(model_path, load2gpt_on_the_fly, name, iteration, views, gaussians, pipeline, background, ATF, TCM):
+def interpolate_view_original(model_path, load2gpt_on_the_fly, name, iteration, views, gaussians, pipeline, background, ATF, TCM, quiet=False):
     render_path = os.path.join(model_path, name, "interpolate_hyper_view_{}".format(iteration), "renders")
 
 
@@ -162,7 +162,7 @@ def interpolate_view_original(model_path, load2gpt_on_the_fly, name, iteration, 
 
     view = views[0]
     renderings = []
-    for i in tqdm(range(frame), desc="Rendering progress"):
+    for i in tqdm(range(frame), desc="Rendering", disable=quiet, mininterval=5.0):
         fid = torch.Tensor([i / (frame - 1)]).cuda()
 
         query_idx = i / frame * len(views)
@@ -205,7 +205,7 @@ def interpolate_view_original(model_path, load2gpt_on_the_fly, name, iteration, 
 
 
 def render_sets(dataset: ModelParams, iteration: int, pipeline: PipelineParams, skip_train: bool, skip_test: bool,
-                mode: str):
+                mode: str, quiet: bool = False):
     with torch.no_grad():
         gaussians = GaussianModel(dataset.sh_degree)
         scene = Scene(dataset, gaussians, load_iteration=iteration, shuffle=False)
@@ -228,7 +228,7 @@ def render_sets(dataset: ModelParams, iteration: int, pipeline: PipelineParams, 
         if not skip_train:
             render_func(dataset.model_path, dataset.load2gpu_on_the_fly, "train", scene.loaded_iter,
                         scene.getTrainCameras(), gaussians, pipeline,
-                        background, ATF, TCM)
+                        background, ATF, TCM, quiet)
 
         if not skip_test:
             output_name = evaluation_output_name(
@@ -237,7 +237,7 @@ def render_sets(dataset: ModelParams, iteration: int, pipeline: PipelineParams, 
             )
             render_func(dataset.model_path, dataset.load2gpu_on_the_fly, output_name, scene.loaded_iter,
                         scene.getTestCameras(), gaussians, pipeline,
-                        background, ATF, TCM)
+                        background, ATF, TCM, quiet)
 
 
 if __name__ == "__main__":
@@ -258,4 +258,4 @@ if __name__ == "__main__":
     # Initialize system state (RNG)
     safe_state(args.quiet)
 
-    render_sets(model.extract(args), args.iteration, pipeline.extract(args), args.skip_train, args.skip_test, args.mode)
+    render_sets(model.extract(args), args.iteration, pipeline.extract(args), args.skip_train, args.skip_test, args.mode, args.quiet)

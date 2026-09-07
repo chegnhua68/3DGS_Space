@@ -34,7 +34,18 @@ except ImportError:
     TENSORBOARD_FOUND = False
 
 #os.environ["CUDA_VISIBLE_DEVICES"] = "0"
-def training(dataset, opt, pipe, testing_iterations, saving_iterations, run_config=None):
+def training(
+    dataset,
+    opt,
+    pipe,
+    testing_iterations,
+    saving_iterations,
+    run_config=None,
+    log_interval=1000,
+    quiet=False,
+):
+    if isinstance(log_interval, bool) or not isinstance(log_interval, int) or log_interval < 1:
+        raise ValueError("log_interval must be a positive integer")
     thermal_weights = (opt.lambda_thermal, opt.lambda_edge, opt.lambda_smooth)
     thermal_parameters = thermal_weights + (opt.noise_beta, opt.edge_gamma)
     if not all(math.isfinite(value) for value in thermal_parameters):
@@ -60,9 +71,15 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, run_conf
 
     viewpoint_stack = None
     ema_loss_for_log = 0.0
+    total_elapsed_ms = 0.0
     best_psnr = 0.0
     best_iteration = 0
-    progress_bar = tqdm(range(opt.iterations), desc="Training progress")
+    progress_bar = tqdm(
+        range(opt.iterations),
+        desc="Training",
+        disable=quiet,
+        mininterval=5.0,
+    )
     smooth_term = get_linear_noise_func(lr_init=0.1, lr_final=1e-15, lr_delay_mult=0.01, max_steps=20000)
     thermal_loss_enabled = any(
         weight > 0 for weight in thermal_weights
@@ -167,20 +184,31 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, run_conf
             viewpoint_cam.load2device('cpu')
 
         with torch.no_grad():
-            # Progress bar
+            elapsed_ms = iter_start.elapsed_time(iter_end)
+            total_elapsed_ms += elapsed_ms
             ema_loss_for_log = 0.4 * loss.item() + 0.6 * ema_loss_for_log
-            if iteration % 10 == 0:
-                progress_bar.set_postfix({"Loss": f"{ema_loss_for_log:.{7}f}"})
-                progress_bar.update(10)
-            if iteration == opt.iterations:
-                progress_bar.close()
+            progress_bar.update(1)
+            if iteration % log_interval == 0 or iteration == opt.iterations:
+                progress_bar.set_postfix({"loss": f"{ema_loss_for_log:.6f}"})
+                peak_memory_mb = torch.cuda.max_memory_allocated() / (1024 * 1024)
+                average_ms = total_elapsed_ms / iteration
+                print(
+                    "[ITER {}] loss={:.6f} points={} avg_ms={:.2f} peak_cuda_mb={:.1f}".format(
+                        iteration,
+                        ema_loss_for_log,
+                        gaussians.get_xyz.shape[0],
+                        average_ms,
+                        peak_memory_mb,
+                    ),
+                    flush=True,
+                )
 
             # Keep track of max radii in image-space for pruning
             gaussians.max_radii2D[visibility_filter] = torch.max(gaussians.max_radii2D[visibility_filter],
                                                                  radii[visibility_filter])
 
             # Log and save
-            cur_psnr = training_report(tb_writer, iteration, Ll1, loss, l1_loss, iter_start.elapsed_time(iter_end),
+            cur_psnr = training_report(tb_writer, iteration, Ll1, loss, l1_loss, elapsed_ms,
                                        testing_iterations, scene, render, (pipe, background), ATF,
                                        TCM, dataset.load2gpu_on_the_fly)
             if tb_writer and thermal_terms is not None:
@@ -193,7 +221,7 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, run_conf
                     best_iteration = iteration
 
             if iteration in saving_iterations:
-                print("\n[ITER {}] Saving Gaussians".format(iteration))
+                print("[ITER {}] saving model".format(iteration), flush=True)
                 scene.save(iteration)
                 ATF.save_weights(scene.model_path, iteration)
                 TCM.save_weights(scene.model_path, iteration)
@@ -222,7 +250,8 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, run_conf
                 TCM.optimizer.zero_grad()
                 TCM.update_learning_rate(iteration)
 
-    print("Best PSNR = {} in Iteration {}".format(best_psnr, best_iteration))
+    progress_bar.close()
+    print("Best PSNR = {} in Iteration {}".format(best_psnr, best_iteration), flush=True)
 
 
 def prepare_output_and_logger(args, run_config=None):
@@ -348,13 +377,21 @@ if __name__ == "__main__":
                         default=[5000, 6000, 7_000] + list(range(10000, 60001, 1000)))
     parser.add_argument("--save_iterations", nargs="+", type=int, default=[7_000, 10_000, 20_000] + list(range(25000, 30001, 1000)))
     parser.add_argument("--quiet", action="store_true")
+    parser.add_argument(
+        "--log_interval",
+        type=int,
+        default=1000,
+        help="update the training summary at this iteration interval (default: 1000)",
+    )
+    parser.add_argument("--seed", type=int, default=0)
     args = parser.parse_args(sys.argv[1:])
     args.save_iterations.append(args.iterations)
 
-    print("Optimizing " + args.model_path)
+    print("Optimizing " + args.model_path, flush=True)
 
     # Initialize system state (RNG)
-    safe_state(args.quiet)
+    # Keep milestone messages visible; --quiet only disables the live progress bar.
+    safe_state(False, seed=args.seed)
 
     # Start GUI server, configure and run training
     # network_gui.init(args.ip, args.port)
@@ -366,7 +403,9 @@ if __name__ == "__main__":
         args.test_iterations,
         args.save_iterations,
         run_config=args,
+        log_interval=args.log_interval,
+        quiet=args.quiet,
     )
 
     # All done
-    print("\nTraining complete.")
+    print("Training complete.", flush=True)

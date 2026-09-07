@@ -1,6 +1,7 @@
 import importlib.util
 import json
 import os
+import sys
 import tempfile
 import unittest
 from pathlib import Path
@@ -24,6 +25,7 @@ class ExperimentRunnerTests(unittest.TestCase):
                 "eval": True,
                 "evaluation_partition": "val",
                 "lambda_thermal": 0.0,
+                "seed": 2027,
             },
         }
         experiment = {
@@ -42,6 +44,12 @@ class ExperimentRunnerTests(unittest.TestCase):
         self.assertEqual(
             render[render.index("--evaluation_partition") + 1], "val"
         )
+        self.assertIn("--seed", train)
+        self.assertEqual(train[train.index("--seed") + 1], "2027")
+
+        matrix["common_args"]["quiet"] = True
+        _, _, quiet_render = RUNNER.build_commands(matrix, experiment)
+        self.assertIn("--quiet", quiet_render)
 
     def test_invalid_evaluation_partition_is_rejected(self):
         matrix = {
@@ -141,6 +149,30 @@ class ExperimentRunnerTests(unittest.TestCase):
             )
             with self.assertRaisesRegex(RUNNER.MatrixError, "non-standard"):
                 RUNNER.load_matrix(path)
+
+    def test_run_experiment_writes_child_logs_and_manifest_references(self):
+        with tempfile.TemporaryDirectory() as directory:
+            output = Path(directory) / "run"
+            command = [
+                sys.executable,
+                "-c",
+                "import sys; print('child stdout'); print('child stderr', file=sys.stderr)",
+            ]
+            RUNNER.run_experiment(
+                "logging",
+                output,
+                command,
+                command,
+                skip_train=False,
+                skip_render=False,
+                allow_existing=False,
+            )
+
+            self.assertIn("child stdout", (output / "stdout.log").read_text())
+            self.assertIn("child stderr", (output / "stderr.log").read_text())
+            record = json.loads((output / "run_manifest.json").read_text())
+            self.assertEqual(record["status"], "completed")
+            self.assertEqual(record["log_files"], {"stdout": "stdout.log", "stderr": "stderr.log"})
 
 
 if __name__ == "__main__":

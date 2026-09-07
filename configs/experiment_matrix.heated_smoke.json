@@ -9,6 +9,8 @@
     "eval": true,
     "iterations": 10,
     "load2gpu_on_the_fly": true,
+    "log_interval": 10,
+    "seed": 2026,
     "quiet": true,
     "resolution": 4,
     "save_iterations": [

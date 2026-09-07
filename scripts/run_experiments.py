@@ -208,6 +208,8 @@ def build_commands(
         "--evaluation_partition",
         evaluation_partition,
     ]
+    if arguments.get("quiet") is True:
+        render_command.append("--quiet")
     return output_path, train_command, render_command
 
 
@@ -326,6 +328,8 @@ def run_experiment(
     input_hashes = _input_hashes(train_command)
     output_path.mkdir(parents=True, exist_ok=True)
     run_manifest_path = output_path / "run_manifest.json"
+    stdout_path = output_path / "stdout.log"
+    stderr_path = output_path / "stderr.log"
     record = {
         "schema_version": 1,
         "experiment": name,
@@ -338,17 +342,38 @@ def run_experiment(
         "input_file_sha256": input_hashes,
         "train_command": train_command,
         "render_command": render_command,
+        "log_files": {"stdout": "stdout.log", "stderr": "stderr.log"},
     }
     _write_json_atomic(run_manifest_path, record)
     try:
-        if not skip_train:
-            subprocess.run(train_command, cwd=str(REPOSITORY_ROOT), check=True)
-        if not skip_render:
-            subprocess.run(render_command, cwd=str(REPOSITORY_ROOT), check=True)
+        with stdout_path.open("w", encoding="utf-8", buffering=1) as stdout_stream, stderr_path.open(
+            "w", encoding="utf-8", buffering=1
+        ) as stderr_stream:
+            if not skip_train:
+                print("[{}] train started".format(name), flush=True)
+                subprocess.run(
+                    train_command,
+                    cwd=str(REPOSITORY_ROOT),
+                    check=True,
+                    stdout=stdout_stream,
+                    stderr=stderr_stream,
+                )
+                print("[{}] train completed".format(name), flush=True)
+            if not skip_render:
+                print("[{}] render started".format(name), flush=True)
+                subprocess.run(
+                    render_command,
+                    cwd=str(REPOSITORY_ROOT),
+                    check=True,
+                    stdout=stdout_stream,
+                    stderr=stderr_stream,
+                )
+                print("[{}] render completed".format(name), flush=True)
         record["status"] = "completed"
     except (OSError, subprocess.CalledProcessError) as exc:
         record["status"] = "failed"
         record["error"] = str(exc)
+        print("[{}] failed: {} (see stdout.log/stderr.log)".format(name, exc), flush=True)
         raise
     finally:
         record["finished_at_utc"] = _utc_now()

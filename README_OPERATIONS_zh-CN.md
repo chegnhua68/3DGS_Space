@@ -46,7 +46,7 @@ Set-Location 'E:\1_Work\Graduate\Work\Thermal3DGS_sparse'
 .\.venv\Scripts\python.exe
 ```
 
-这样可以避免 Windows Store Python、全局 Python 3.14 或其他环境抢占命令。不要假定当前 Scoop Python 已注册到 Windows `py` launcher；本机执行 `py -3.11` 不可用。
+这样可以避免 Windows Store Python、全局 Python 3.14 或其他环境抢占命令。不要假定当前 Scoop Python 已注册到 Windows `py` launcher；本机执行 `py -3.11` 不可用。正式训练还必须显式传入 `--seed`，它会同时控制 Python、NumPy、PyTorch 和 CUDA 的随机状态。
 
 ## 3. 获取并固定上游源码
 
@@ -278,7 +278,18 @@ load2gpu_on_the_fly=true
 
 只设置 `data_device=cpu` 而不启用按需传 GPU，会让 CUDA rasterizer 收到 CPU 相机矩阵并发生设备不匹配。
 
-## 10. 验证操作
+## 10. 日志行为与验证操作
+
+训练器默认每 1000 次迭代更新一次摘要；加入 `--quiet` 后关闭实时进度条，但仍保留检查点、验证和最终摘要。实验 runner 会将训练和渲染子进程分别保存到每个实验目录：
+
+```text
+runs/formal/<condition>/<method>/seed_<seed>/stdout.log
+runs/formal/<condition>/<method>/seed_<seed>/stderr.log
+```
+
+主终端只显示实验开始、完成或失败状态。`run_manifest.json` 同时记录这两个日志文件名，便于审计和定位失败原因。
+
+## 11. 验证操作
 
 运行全部测试：
 
@@ -318,11 +329,12 @@ dry-run 必须显示训练命令同时包含：
 --data_device cpu --load2gpu_on_the_fly
 ```
 
-已完成的 10-iteration smoke 和 100-iteration 容量校准只证明链路可运行，不是正式收敛结果。具体数值及限制见 [实验日志](docs/experiment_log.md)。
+已完成的 smoke 和容量校准只证明链路可运行，不是正式收敛结果。历史时间线见 [实验日志](docs/experiment_log.md)，
+当前正式训练计划的阶段结果见 [正式训练记录](docs/formal_training_log.md)。
 
-## 11. 首次提交到 GitHub 的实际过程
+## 12. 首次提交到 GitHub 的实际过程
 
-### 11.1 提交前检查
+### 12.1 提交前检查
 
 先确认当前分支和文件：
 
@@ -355,7 +367,7 @@ git diff --cached --check
 - 不应出现意外的 Git 子仓库模式 `160000`；
 - GitHub 普通仓库中不应出现接近或超过 100 MB 的单文件。
 
-### 11.2 清理误加入的嵌套仓库
+### 12.2 清理误加入的嵌套仓库
 
 首次提交时曾误把仓库内的另一个 Git 克隆记录成模式 `160000`。检查方法：
 
@@ -372,7 +384,7 @@ git rm --cached -- 3DGS-space
 
 本次还发现两个本地错误克隆：空的 `3DGS_Space/` 和指向错误连字符仓库的 `3DGS-space/`。在核对远程地址和 `git status --porcelain` 为空后，两者都已从当前工作目录删除。删除命令具有破坏性，其他机器不得照抄路径；必须先确认目标仓库没有未提交内容。
 
-### 11.3 创建提交
+### 12.3 创建提交
 
 首次系统提交使用：
 
@@ -394,7 +406,7 @@ git commit --amend --no-edit
 
 只应 amend 尚未共享的提交。已经被他人拉取的提交不要随意改写。
 
-### 11.4 配置正确的 GitHub 远程
+### 12.4 配置正确的 GitHub 远程
 
 目标仓库使用下划线：
 
@@ -430,7 +442,7 @@ git remote set-url origin https://github.com/chegnhua68/3DGS_Space.git
 
 不要把 GitHub token 写进远程 URL、脚本或 README。认证应交给浏览器或 Git Credential Manager。
 
-### 11.5 首次推送空仓库
+### 12.5 首次推送空仓库
 
 因为远程为空，本次一次创建 `main` 和开发分支：
 
@@ -467,9 +479,9 @@ main                  -> 5dc6d92
 sparse-ir-development -> 5dc6d92
 ```
 
-## 12. 后续日常提交和推送
+## 13. 后续日常提交和推送
 
-### 12.1 在开发分支提交
+### 13.1 在开发分支提交
 
 确认当前位于开发分支：
 
@@ -493,7 +505,7 @@ git push
 
 由于本地 `sparse-ir-development` 已跟踪 `origin/sparse-ir-development`，最后一条 `git push` 会更新开发分支，不会自动修改 `main`。
 
-### 12.2 推荐：通过 Pull Request 更新 main
+### 13.2 推荐：通过 Pull Request 更新 main
 
 1. 先把开发分支推送到 GitHub；
 2. 打开 `https://github.com/chegnhua68/3DGS_Space`；
@@ -508,7 +520,7 @@ git fetch origin
 git log --oneline --decorate --graph --all -20
 ```
 
-### 12.3 明确需要时直接快进 main
+### 13.3 明确需要时直接快进 main
 
 只有确认 `main` 没有其他人新增提交、当前开发分支已经完整验证时，才可以：
 
@@ -526,7 +538,7 @@ git log --oneline --decorate --graph --all -30
 
 检查分叉原因，再决定 merge、rebase 或 Pull Request。
 
-## 13. 同步上游 Thermal3D-GS
+## 14. 同步上游 Thermal3D-GS
 
 查看上游变化：
 
@@ -543,7 +555,7 @@ git status --short
 
 没有输出。同步上游会影响训练核心和论文可复现基线，应建立单独分支、运行全部测试，并在 [上游来源审计](docs/upstream_provenance.md) 中记录新提交哈希。
 
-## 14. Git 常见问题
+## 15. Git 常见问题
 
 ### `remote origin already exists`
 
@@ -585,7 +597,7 @@ git -C <nested-path> remote -v
 
 确认它是否是独立项目。不要在未检查内容时递归删除目录。
 
-## 15. 发布前最终检查表
+## 16. 发布前最终检查表
 
 每次准备把实验代码合并到 `main` 前，至少确认：
 

@@ -74,6 +74,10 @@ thermal physics.
 When all three new lambda values are zero, training skips construction and
 evaluation of all new maps and losses.
 
+The experiment runner writes child-process output to `stdout.log` and
+`stderr.log` inside each experiment directory. The terminal remains limited to
+experiment start, completion, and failure summaries.
+
 ## Metrics
 
 - PSNR and SSIM use the manifest data range and identical border/mask handling.

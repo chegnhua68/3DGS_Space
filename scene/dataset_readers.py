@@ -110,6 +110,7 @@ def readColmapCameras(cam_extrinsics, cam_intrinsics, images_folder, selection=N
         image_name: index for index, image_name in enumerate(ordered_names)
     }
     seen_camera_refs = set()
+    sys.stdout.write("Reading cameras ({})\n".format(num_frames))
     if selection is not None:
         available_camera_refs = {
             extrinsic.name.replace("\\", "/")
@@ -123,13 +124,7 @@ def readColmapCameras(cam_extrinsics, cam_intrinsics, images_folder, selection=N
                     sorted(missing), sorted(unexpected)
                 )
             )
-    for idx, key in enumerate(cam_extrinsics):
-        sys.stdout.write('\r')
-        # the exact output you're looking for:
-        sys.stdout.write(
-            "Reading camera {}/{}".format(idx + 1, len(cam_extrinsics)))
-        sys.stdout.flush()
-
+    for key in cam_extrinsics:
         extr = cam_extrinsics[key]
         camera_ref = extr.name.replace("\\", "/")
         if selection is not None and camera_ref not in selection.active_camera_refs:
@@ -199,7 +194,7 @@ def readColmapCameras(cam_extrinsics, cam_intrinsics, images_folder, selection=N
                     ", ".join(sorted(missing))
                 )
             )
-    sys.stdout.write('\n')
+    sys.stdout.write("Loaded cameras ({})\n".format(len(cam_infos)))
     return cam_infos
 
 

@@ -582,9 +582,9 @@ runner 默认拒绝复用已有实验目录。每个实验在训练前写入 `ru
 - Python、平台、开始/结束时间；
 - `running`、`completed` 或 `failed` 状态。
 
-`--allow-existing` 会允许复用已有目录，应仅在明确理解覆盖风险时使用。
+runner 会将训练和渲染子进程分别写入实验目录下的 `stdout.log` 和 `stderr.log`，主终端只显示实验开始、完成或失败状态。训练器默认每 1000 次迭代更新一次摘要；传入 `--quiet` 时关闭实时进度条，但仍保留检查点、验证和最终摘要。
 
-runner 不捕获训练和渲染的 stdout/stderr。需要长期保存终端日志时，应由调用 shell、作业调度器或外层日志系统单独重定向。
+`--allow-existing` 会允许复用已有目录，应仅在明确理解覆盖风险时使用。
 
 Windows 也可以使用包装脚本：
 
@@ -720,7 +720,8 @@ seed 2026 的嵌套训练子集为：
 
 当前 `sparse-ir-development` 工作树仍有未提交和未跟踪修改，因此还不存在能够代表本扩展现状的已发布 commit。现有 runner 通过 Git 状态、diff 哈希和源码快照哈希记录每次 smoke 的实际代码内容。
 
-完整时间线见 [实验日志](docs/experiment_log.md)。
+完整历史时间线见 [实验日志](docs/experiment_log.md)；正式训练计划的逐阶段执行记录见
+[正式训练记录](docs/formal_training_log.md)。
 
 ## 测试
 

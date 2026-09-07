@@ -8,7 +8,10 @@
     "evaluation_partition": "val",
     "eval": true,
     "iterations": 30000,
-    "load2gpu_on_the_fly": true
+    "load2gpu_on_the_fly": true,
+    "log_interval": 1000,
+    "quiet": true,
+    "seed": 2026
   },
   "experiments": [
     {
