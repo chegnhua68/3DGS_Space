@@ -11,12 +11,65 @@
 
 from argparse import ArgumentParser, Namespace
 import ast
+import math
 import sys
 import os
+from collections.abc import Mapping
 
 
 class GroupParams:
     pass
+
+
+def _option_value(options, name, default):
+    if isinstance(options, Mapping):
+        return options.get(name, default)
+    return getattr(options, name, default)
+
+
+def validate_aux_loss_options(options) -> None:
+    """Validate resolved auxiliary-loss options without touching CUDA state."""
+
+    version = _option_value(options, "aux_loss_version", "legacy")
+    if version not in ("legacy", "filtered_edge"):
+        raise ValueError("aux_loss_version must be 'legacy' or 'filtered_edge'")
+
+    numeric_defaults = {
+        "lambda_thermal": 0.0,
+        "lambda_edge": 0.0,
+        "lambda_smooth": 0.0,
+        "noise_beta": 5.0,
+        "edge_gamma": 3.0,
+    }
+    resolved = {}
+    for name, default in numeric_defaults.items():
+        value = _option_value(options, name, default)
+        if isinstance(value, bool) or not isinstance(value, (int, float)):
+            raise TypeError("{} must be a real scalar".format(name))
+        value = float(value)
+        if not math.isfinite(value) or value < 0:
+            raise ValueError("{} must be finite and non-negative".format(name))
+        resolved[name] = value
+
+    kernel_size = _option_value(options, "edge_filter_kernel", 5)
+    if isinstance(kernel_size, bool) or not isinstance(kernel_size, int):
+        raise TypeError("edge_filter_kernel must be an integer")
+    if kernel_size < 1 or kernel_size % 2 == 0:
+        raise ValueError("edge_filter_kernel must be a positive odd integer")
+
+    sigma = _option_value(options, "edge_filter_sigma", 1.0)
+    if isinstance(sigma, bool) or not isinstance(sigma, (int, float)):
+        raise TypeError("edge_filter_sigma must be a real scalar")
+    sigma = float(sigma)
+    if not math.isfinite(sigma) or sigma <= 0:
+        raise ValueError("edge_filter_sigma must be finite and positive")
+
+    if version == "filtered_edge" and (
+        resolved["lambda_thermal"] != 0 or resolved["lambda_smooth"] != 0
+    ):
+        raise ValueError(
+            "filtered_edge requires lambda_thermal == 0 and lambda_smooth == 0"
+        )
 
 
 def evaluation_output_name(dataset_manifest, evaluation_partition):
@@ -115,12 +168,20 @@ class OptimizationParams(ParamGroup):
         self.lambda_smooth = 0.0
         self.noise_beta = 5.0
         self.edge_gamma = 3.0
+        self.aux_loss_version = "legacy"
+        self.edge_filter_kernel = 5
+        self.edge_filter_sigma = 1.0
         self.densification_interval = 100
         self.opacity_reset_interval = 3000
         self.densify_from_iter = 500
         self.densify_until_iter = 15_000
         self.densify_grad_threshold = 0.0002
         super().__init__(parser, "Optimization Parameters")
+
+    def extract(self, args):
+        group = super().extract(args)
+        validate_aux_loss_options(group)
+        return group
 
 
 def _parse_cfg_namespace(value):

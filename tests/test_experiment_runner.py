@@ -47,6 +47,25 @@ class ExperimentRunnerTests(unittest.TestCase):
         self.assertIn("--seed", train)
         self.assertEqual(train[train.index("--seed") + 1], "2027")
 
+        matrix["common_args"].update(
+            {
+                "aux_loss_version": "filtered_edge",
+                "edge_filter_kernel": 5,
+                "edge_filter_sigma": 1.0,
+            }
+        )
+        _, filtered_train, _ = RUNNER.build_commands(matrix, experiment)
+        self.assertEqual(
+            filtered_train[filtered_train.index("--aux_loss_version") + 1],
+            "filtered_edge",
+        )
+        self.assertEqual(
+            filtered_train[filtered_train.index("--edge_filter_kernel") + 1], "5"
+        )
+        self.assertEqual(
+            filtered_train[filtered_train.index("--edge_filter_sigma") + 1], "1.0"
+        )
+
         matrix["common_args"]["quiet"] = True
         _, _, quiet_render = RUNNER.build_commands(matrix, experiment)
         self.assertIn("--quiet", quiet_render)
@@ -150,14 +169,129 @@ class ExperimentRunnerTests(unittest.TestCase):
             with self.assertRaisesRegex(RUNNER.MatrixError, "non-standard"):
                 RUNNER.load_matrix(path)
 
-    def test_run_experiment_writes_child_logs_and_manifest_references(self):
+    def test_matrix_rejects_invalid_filtered_edge_configuration(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "matrix.json"
+            value = {
+                "schema_version": 1,
+                "source_path": "scene",
+                "dataset_manifest": "dataset.json",
+                "output_root": "runs",
+                "common_args": {
+                    "aux_loss_version": "filtered_edge",
+                    "lambda_thermal": 0.1,
+                },
+                "experiments": [
+                    {"name": "invalid", "split_manifest": "a.json", "args": {}}
+                ],
+            }
+            path.write_text(json.dumps(value), encoding="utf-8")
+            with self.assertRaisesRegex(RUNNER.MatrixError, "requires lambda_thermal"):
+                RUNNER.load_matrix(path)
+
+            value["common_args"] = {"edge_filter_kernel": 4}
+            path.write_text(json.dumps(value), encoding="utf-8")
+            with self.assertRaisesRegex(RUNNER.MatrixError, "positive odd"):
+                RUNNER.load_matrix(path)
+
+    def test_priority1_matrix_freezes_inputs_and_forwards_four_methods(self):
+        matrix = RUNNER.load_matrix(
+            REPOSITORY_ROOT
+            / "configs"
+            / "experiment_matrix.priority1_loss_revision.json"
+        )
+        self.assertEqual(len(matrix["experiments"]), 4)
+        expected_methods = {
+            "B0_baseline_sparse25_noise03_seed2026_r1_7k": ("legacy", "0.0", "0.0", "0.0"),
+            "O0_legacy_full_sparse25_noise03_seed2026_r1_7k": ("legacy", "0.1", "0.01", "0.001"),
+            "E1_legacy_edge_sparse25_noise03_seed2026_r1_7k": ("legacy", "0.0", "0.001", "0.0"),
+            "E2_filtered_edge_sparse25_noise03_seed2026_r1_7k": ("filtered_edge", "0.0", "0.001", "0.0"),
+        }
+        frozen_commands = []
+        for experiment in matrix["experiments"]:
+            output, train, render = RUNNER.build_commands(matrix, experiment)
+            name = experiment["name"]
+            version, thermal, edge, smooth = expected_methods[name]
+            self.assertEqual(output.name, name)
+            self.assertEqual(train[train.index("--aux_loss_version") + 1], version)
+            self.assertEqual(train[train.index("--lambda_thermal") + 1], thermal)
+            self.assertEqual(train[train.index("--lambda_edge") + 1], edge)
+            self.assertEqual(train[train.index("--lambda_smooth") + 1], smooth)
+            self.assertEqual(train[train.index("--iterations") + 1], "7000")
+            self.assertEqual(train[train.index("--resolution") + 1], "1")
+            self.assertEqual(train[train.index("--seed") + 1], "2026")
+            self.assertEqual(train[train.index("--evaluation_partition") + 1], "val")
+            self.assertEqual(render[render.index("--evaluation_partition") + 1], "val")
+            frozen_commands.append(
+                tuple(
+                    train[train.index(flag) + 1]
+                    for flag in (
+                        "--dataset_manifest",
+                        "--split_manifest",
+                        "--degradation_manifest",
+                    )
+                )
+            )
+        self.assertEqual(len(set(frozen_commands)), 1)
+
+    def test_expected_input_hash_mismatch_fails_before_output_creation(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            manifest = root / "dataset.json"
+            manifest.write_text("fixed input", encoding="utf-8")
+            output = root / "run"
+            command = [
+                sys.executable,
+                "-c",
+                "pass",
+                "--dataset_manifest",
+                str(manifest),
+            ]
+            with self.assertRaisesRegex(ValueError, "SHA256 mismatch"):
+                RUNNER.run_experiment(
+                    "hash-mismatch",
+                    output,
+                    command,
+                    command,
+                    skip_train=False,
+                    skip_render=False,
+                    allow_existing=False,
+                    expected_input_hashes={"dataset_manifest": "0" * 64},
+                )
+            self.assertFalse(output.exists())
+
+    def test_existing_output_is_rejected_without_modification(self):
         with tempfile.TemporaryDirectory() as directory:
             output = Path(directory) / "run"
+            output.mkdir()
+            sentinel = output / "sentinel.txt"
+            sentinel.write_text("unchanged", encoding="utf-8")
+            with self.assertRaisesRegex(FileExistsError, "refusing to reuse"):
+                RUNNER.run_experiment(
+                    "existing",
+                    output,
+                    [sys.executable, "-c", "raise SystemExit(9)"],
+                    [sys.executable, "-c", "raise SystemExit(9)"],
+                    skip_train=False,
+                    skip_render=False,
+                    allow_existing=False,
+                )
+            self.assertEqual(sentinel.read_text(encoding="utf-8"), "unchanged")
+
+    def test_run_experiment_writes_child_logs_and_manifest_references(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            output = root / "run"
+            input_manifest = root / "dataset.json"
+            input_manifest.write_text("pinned", encoding="utf-8")
             command = [
                 sys.executable,
                 "-c",
                 "import sys; print('child stdout'); print('child stderr', file=sys.stderr)",
+                "--dataset_manifest",
+                str(input_manifest),
             ]
+            expected_hash = RUNNER._sha256_file(input_manifest)
             RUNNER.run_experiment(
                 "logging",
                 output,
@@ -166,6 +300,7 @@ class ExperimentRunnerTests(unittest.TestCase):
                 skip_train=False,
                 skip_render=False,
                 allow_existing=False,
+                expected_input_hashes={"dataset_manifest": expected_hash},
             )
 
             self.assertIn("child stdout", (output / "stdout.log").read_text())
@@ -173,6 +308,11 @@ class ExperimentRunnerTests(unittest.TestCase):
             record = json.loads((output / "run_manifest.json").read_text())
             self.assertEqual(record["status"], "completed")
             self.assertEqual(record["log_files"], {"stdout": "stdout.log", "stderr": "stderr.log"})
+            self.assertEqual(record["input_file_sha256"]["dataset_manifest"], expected_hash)
+            self.assertEqual(
+                record["expected_input_file_sha256"]["dataset_manifest"],
+                expected_hash,
+            )
 
 
 if __name__ == "__main__":

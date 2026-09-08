@@ -10,7 +10,7 @@
 #
 
 import os
-import math
+import csv
 import torch
 from random import randint
 # cq:import corners_loss
@@ -24,7 +24,12 @@ import uuid
 from tqdm import tqdm
 from utils.image_utils import psnr
 from argparse import ArgumentParser, Namespace
-from arguments import ModelParams, PipelineParams, OptimizationParams
+from arguments import (
+    ModelParams,
+    PipelineParams,
+    OptimizationParams,
+    validate_aux_loss_options,
+)
 import numpy as np
 try:
     from torch.utils.tensorboard import SummaryWriter
@@ -34,6 +39,45 @@ except ImportError:
     TENSORBOARD_FOUND = False
 
 #os.environ["CUDA_VISIBLE_DEVICES"] = "0"
+LOSS_COMPONENT_FIELDS = (
+    "iteration",
+    "aux_loss_version",
+    "lambda_thermal",
+    "lambda_edge",
+    "lambda_smooth",
+    "L_baseline",
+    "L_thermal_raw",
+    "L_edge_raw",
+    "L_smooth_raw",
+    "weighted_L_thermal",
+    "weighted_L_edge",
+    "weighted_L_smooth",
+    "L_total",
+    "Gaussian_count",
+    "avg_ms",
+    "peak_cuda_mb",
+)
+
+
+def _initialize_loss_component_log(model_path):
+    path = os.path.join(model_path, "loss_components.csv")
+    with open(path, "w", encoding="utf-8", newline="") as stream:
+        csv.DictWriter(stream, fieldnames=LOSS_COMPONENT_FIELDS).writeheader()
+    return path
+
+
+def _append_loss_component_log(path, row):
+    with open(path, "a", encoding="utf-8", newline="") as stream:
+        csv.DictWriter(stream, fieldnames=LOSS_COMPONENT_FIELDS).writerow(row)
+
+
+def _raw_and_weighted_term(terms, name, weight):
+    if weight == 0:
+        return "disabled", 0.0
+    raw = float(terms[name].detach().item())
+    return raw, weight * raw
+
+
 def training(
     dataset,
     opt,
@@ -46,13 +90,34 @@ def training(
 ):
     if isinstance(log_interval, bool) or not isinstance(log_interval, int) or log_interval < 1:
         raise ValueError("log_interval must be a positive integer")
+    validate_aux_loss_options(opt)
     thermal_weights = (opt.lambda_thermal, opt.lambda_edge, opt.lambda_smooth)
-    thermal_parameters = thermal_weights + (opt.noise_beta, opt.edge_gamma)
-    if not all(math.isfinite(value) for value in thermal_parameters):
-        raise ValueError("thermal loss parameters must be finite")
-    if any(weight < 0 for weight in thermal_parameters):
-        raise ValueError("thermal loss parameters must be non-negative")
+    aux_loss_version = getattr(opt, "aux_loss_version", "legacy")
+    edge_filter_kernel = getattr(opt, "edge_filter_kernel", 5)
+    edge_filter_sigma = getattr(opt, "edge_filter_sigma", 1.0)
     tb_writer = prepare_output_and_logger(dataset, run_config)
+    loss_component_path = _initialize_loss_component_log(dataset.model_path)
+    auxiliary_enabled = any(weight > 0 for weight in thermal_weights)
+    print(
+        "[AUX] version={} enabled={} lambda_thermal={:g} lambda_edge={:g} "
+        "lambda_smooth={:g} filter={} noise_beta={} edge_gamma={}".format(
+            aux_loss_version,
+            str(auxiliary_enabled).lower(),
+            opt.lambda_thermal,
+            opt.lambda_edge,
+            opt.lambda_smooth,
+            (
+                "{}x{}/sigma={:g}".format(
+                    edge_filter_kernel, edge_filter_kernel, edge_filter_sigma
+                )
+                if aux_loss_version == "filtered_edge"
+                else "disabled"
+            ),
+            opt.noise_beta if aux_loss_version == "legacy" else "disabled",
+            opt.edge_gamma if aux_loss_version == "legacy" else "disabled",
+        ),
+        flush=True,
+    )
     gaussians = GaussianModel(dataset.sh_degree)
     ATF = ATFModel(dataset.is_blender)
     ATF.train_setting(opt)
@@ -81,9 +146,7 @@ def training(
         mininterval=5.0,
     )
     smooth_term = get_linear_noise_func(lr_init=0.1, lr_final=1e-15, lr_delay_mult=0.01, max_steps=20000)
-    thermal_loss_enabled = any(
-        weight > 0 for weight in thermal_weights
-    )
+    thermal_loss_enabled = auxiliary_enabled
     for iteration in range(1, opt.iterations + 1):
         if network_gui.conn == None:
             network_gui.try_connect()
@@ -161,10 +224,12 @@ def training(
         Ll1 = l1_loss(image, gt_image)
         if iteration<30000000:
         #if iteration<0:
-            loss = (1.0 - opt.lambda_dssim -0.2) * (Ll1) + opt.lambda_dssim * (1.0 - ssim(image, gt_image)) + 0.2*c_loss*max(1-iteration/5000,0)
+            baseline_loss = (1.0 - opt.lambda_dssim -0.2) * (Ll1) + opt.lambda_dssim * (1.0 - ssim(image, gt_image)) + 0.2*c_loss*max(1-iteration/5000,0)
         else:
-            loss = (1.0 - opt.lambda_dssim) * (Ll1) + opt.lambda_dssim * (1.0 - ssim(image, gt_image))
+            baseline_loss = (1.0 - opt.lambda_dssim) * (Ll1) + opt.lambda_dssim * (1.0 - ssim(image, gt_image))
+        loss = baseline_loss
         thermal_terms = None
+        thermal_extra = None
         if thermal_loss_enabled:
             thermal_extra, thermal_terms = thermal_physics_loss(
                 image,
@@ -174,6 +239,9 @@ def training(
                 lambda_smooth=opt.lambda_smooth,
                 noise_beta=opt.noise_beta,
                 edge_gamma=opt.edge_gamma,
+                aux_loss_version=aux_loss_version,
+                edge_filter_kernel=edge_filter_kernel,
+                edge_filter_sigma=edge_filter_sigma,
             )
             loss = loss + thermal_extra
         loss.backward()
@@ -192,10 +260,53 @@ def training(
                 progress_bar.set_postfix({"loss": f"{ema_loss_for_log:.6f}"})
                 peak_memory_mb = torch.cuda.max_memory_allocated() / (1024 * 1024)
                 average_ms = total_elapsed_ms / iteration
+                terms = thermal_terms or {}
+                raw_thermal, weighted_thermal = _raw_and_weighted_term(
+                    terms, "thermal", opt.lambda_thermal
+                )
+                raw_edge, weighted_edge = _raw_and_weighted_term(
+                    terms, "edge", opt.lambda_edge
+                )
+                raw_smooth, weighted_smooth = _raw_and_weighted_term(
+                    terms, "smooth", opt.lambda_smooth
+                )
+                component_row = {
+                    "iteration": iteration,
+                    "aux_loss_version": aux_loss_version,
+                    "lambda_thermal": opt.lambda_thermal,
+                    "lambda_edge": opt.lambda_edge,
+                    "lambda_smooth": opt.lambda_smooth,
+                    "L_baseline": float(baseline_loss.detach().item()),
+                    "L_thermal_raw": raw_thermal,
+                    "L_edge_raw": raw_edge,
+                    "L_smooth_raw": raw_smooth,
+                    "weighted_L_thermal": weighted_thermal,
+                    "weighted_L_edge": weighted_edge,
+                    "weighted_L_smooth": weighted_smooth,
+                    "L_total": float(loss.detach().item()),
+                    "Gaussian_count": gaussians.get_xyz.shape[0],
+                    "avg_ms": average_ms,
+                    "peak_cuda_mb": peak_memory_mb,
+                }
+                _append_loss_component_log(loss_component_path, component_row)
                 print(
-                    "[ITER {}] loss={:.6f} points={} avg_ms={:.2f} peak_cuda_mb={:.1f}".format(
+                    "[ITER {}] aux_loss_version={} lambda_thermal={:g} lambda_edge={:g} lambda_smooth={:g} "
+                    "L_baseline={:.6f} L_thermal_raw={} L_edge_raw={} L_smooth_raw={} "
+                    "weighted_L_thermal={:.6f} weighted_L_edge={:.6f} weighted_L_smooth={:.6f} "
+                    "L_total={:.6f} points={} avg_ms={:.2f} peak_cuda_mb={:.1f}".format(
                         iteration,
-                        ema_loss_for_log,
+                        aux_loss_version,
+                        opt.lambda_thermal,
+                        opt.lambda_edge,
+                        opt.lambda_smooth,
+                        component_row["L_baseline"],
+                        raw_thermal if raw_thermal == "disabled" else "{:.6f}".format(raw_thermal),
+                        raw_edge if raw_edge == "disabled" else "{:.6f}".format(raw_edge),
+                        raw_smooth if raw_smooth == "disabled" else "{:.6f}".format(raw_smooth),
+                        weighted_thermal,
+                        weighted_edge,
+                        weighted_smooth,
+                        component_row["L_total"],
                         gaussians.get_xyz.shape[0],
                         average_ms,
                         peak_memory_mb,
@@ -210,11 +321,40 @@ def training(
             # Log and save
             cur_psnr = training_report(tb_writer, iteration, Ll1, loss, l1_loss, elapsed_ms,
                                        testing_iterations, scene, render, (pipe, background), ATF,
-                                       TCM, dataset.load2gpu_on_the_fly)
-            if tb_writer and thermal_terms is not None:
-                tb_writer.add_scalar("train_loss/thermal_weighted", thermal_extra.item(), iteration)
-                for name, value in thermal_terms.items():
-                    tb_writer.add_scalar("train_loss/" + name, value.item(), iteration)
+                                       TCM, dataset.load2gpu_on_the_fly,
+                                       dataset.evaluation_partition if dataset.dataset_manifest else "test")
+            if tb_writer:
+                tb_writer.add_scalar(
+                    "train_loss/baseline", baseline_loss.detach().item(), iteration
+                )
+                auxiliary_total = (
+                    thermal_extra.detach().item()
+                    if thermal_extra is not None
+                    else 0.0
+                )
+                tb_writer.add_scalar(
+                    "train_loss/auxiliary_weighted_total",
+                    auxiliary_total,
+                    iteration,
+                )
+                for name, weight in zip(
+                    ("thermal", "edge", "smooth"), thermal_weights
+                ):
+                    if weight > 0:
+                        raw_value = thermal_terms[name].detach().item()
+                        tb_writer.add_scalar(
+                            "train_loss/auxiliary_{}_raw".format(name),
+                            raw_value,
+                            iteration,
+                        )
+                        weighted_value = weight * raw_value
+                    else:
+                        weighted_value = 0.0
+                    tb_writer.add_scalar(
+                        "train_loss/auxiliary_{}_weighted".format(name),
+                        weighted_value,
+                        iteration,
+                    )
             if iteration in testing_iterations:
                 if cur_psnr.item() > best_psnr:
                     best_psnr = cur_psnr.item()
@@ -251,6 +391,8 @@ def training(
                 TCM.update_learning_rate(iteration)
 
     progress_bar.close()
+    if tb_writer:
+        tb_writer.close()
     print("Best PSNR = {} in Iteration {}".format(best_psnr, best_iteration), flush=True)
 
 
@@ -263,7 +405,6 @@ def prepare_output_and_logger(args, run_config=None):
         args.model_path = os.path.join("./output/", unique_str[0:10])
 
     # Set up output folder
-    print("Output folder: {}".format(args.model_path))
     os.makedirs(args.model_path, exist_ok=True)
     recorded_args = vars(run_config).copy() if run_config is not None else {}
     recorded_args.update(vars(args))
@@ -275,14 +416,12 @@ def prepare_output_and_logger(args, run_config=None):
     # Create Tensorboard writer
     tb_writer = None
     if TENSORBOARD_FOUND:
-        tb_writer = SummaryWriter(args.model_path)
-    else:
-        print("Tensorboard not available: not logging progress")
+        tb_writer = SummaryWriter(args.model_path, flush_secs=5)
     return tb_writer
 
 
 def training_report(tb_writer, iteration, Ll1, loss, l1_loss, elapsed, testing_iterations, scene: Scene, renderFunc,
-                    renderArgs, ATF, TCM, load2gpu_on_the_fly):
+                    renderArgs, ATF, TCM, load2gpu_on_the_fly, evaluation_partition="test"):
     if tb_writer:
         tb_writer.add_scalar('train_loss_patches/l1_loss', Ll1.item(), iteration)
         tb_writer.add_scalar('train_loss_patches/total_loss', loss.item(), iteration)
@@ -292,7 +431,7 @@ def training_report(tb_writer, iteration, Ll1, loss, l1_loss, elapsed, testing_i
     # Report test and samples of training set
     if iteration in testing_iterations:
         torch.cuda.empty_cache()
-        validation_configs = ({'name': 'test', 'cameras': scene.getTestCameras()},
+        validation_configs = ({'name': evaluation_partition, 'cameras': scene.getTestCameras()},
                               {'name': 'train',
                                'cameras': [scene.getTrainCameras()[idx % len(scene.getTrainCameras())] for idx in
                                            range(5, 30, 5)]})
@@ -349,9 +488,9 @@ def training_report(tb_writer, iteration, Ll1, loss, l1_loss, elapsed, testing_i
 
                 l1_test = l1_loss(images, gts)
                 psnr_test = psnr(images, gts).mean()
-                if config['name'] == 'test' or len(validation_configs[0]['cameras']) == 0:
+                if config['name'] == evaluation_partition or len(validation_configs[0]['cameras']) == 0:
                     test_psnr = psnr_test
-                print("\n[ITER {}] Evaluating {}: L1 {} PSNR {}".format(iteration, config['name'], l1_test, psnr_test))
+                print("[ITER {}] Evaluating {}: L1 {} PSNR {}".format(iteration, config['name'], l1_test, psnr_test))
                 if tb_writer:
                     tb_writer.add_scalar(config['name'] + '/loss_viewpoint - l1_loss', l1_test, iteration)
                     tb_writer.add_scalar(config['name'] + '/loss_viewpoint - psnr', psnr_test, iteration)
@@ -386,6 +525,9 @@ if __name__ == "__main__":
     parser.add_argument("--seed", type=int, default=0)
     args = parser.parse_args(sys.argv[1:])
     args.save_iterations.append(args.iterations)
+    dataset = lp.extract(args)
+    optimization = op.extract(args)
+    pipeline = pp.extract(args)
 
     print("Optimizing " + args.model_path, flush=True)
 
@@ -397,9 +539,9 @@ if __name__ == "__main__":
     # network_gui.init(args.ip, args.port)
     torch.autograd.set_detect_anomaly(args.detect_anomaly)
     training(
-        lp.extract(args),
-        op.extract(args),
-        pp.extract(args),
+        dataset,
+        optimization,
+        pipeline,
         args.test_iterations,
         args.save_iterations,
         run_config=args,

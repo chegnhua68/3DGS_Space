@@ -25,10 +25,67 @@ RESERVED_ARGUMENTS = frozenset(
         "degradation_manifest",
     )
 )
+INPUT_HASH_KEYS = frozenset(
+    ("dataset_manifest", "split_manifest", "degradation_manifest")
+)
 
 
 class MatrixError(ValueError):
     pass
+
+
+def _validate_aux_loss_arguments(arguments: Mapping[str, object], label: str) -> None:
+    version = arguments.get("aux_loss_version", "legacy")
+    if version not in ("legacy", "filtered_edge"):
+        raise MatrixError(
+            "{}.aux_loss_version must be 'legacy' or 'filtered_edge'".format(label)
+        )
+    kernel = arguments.get("edge_filter_kernel", 5)
+    if isinstance(kernel, bool) or not isinstance(kernel, int):
+        raise MatrixError("{}.edge_filter_kernel must be an integer".format(label))
+    if kernel < 1 or kernel % 2 == 0:
+        raise MatrixError(
+            "{}.edge_filter_kernel must be a positive odd integer".format(label)
+        )
+    sigma = arguments.get("edge_filter_sigma", 1.0)
+    if isinstance(sigma, bool) or not isinstance(sigma, (int, float)):
+        raise MatrixError("{}.edge_filter_sigma must be numeric".format(label))
+    if not math.isfinite(float(sigma)) or float(sigma) <= 0:
+        raise MatrixError(
+            "{}.edge_filter_sigma must be finite and positive".format(label)
+        )
+    if version == "filtered_edge":
+        for name in ("lambda_thermal", "lambda_smooth"):
+            value = arguments.get(name, 0.0)
+            if (
+                isinstance(value, bool)
+                or not isinstance(value, (int, float))
+                or not math.isfinite(float(value))
+            ):
+                raise MatrixError("{}.{} must be finite and numeric".format(label, name))
+            if float(value) != 0:
+                raise MatrixError(
+                    "filtered_edge requires lambda_thermal == 0 and lambda_smooth == 0"
+                )
+
+
+def _validate_expected_hashes(value: object, label: str) -> None:
+    if value is None:
+        return
+    if not isinstance(value, dict) or not value:
+        raise MatrixError("{} must be a non-empty object".format(label))
+    unknown = set(value) - INPUT_HASH_KEYS
+    if unknown:
+        raise MatrixError(
+            "{} contains unknown input(s): {}".format(label, ", ".join(sorted(unknown)))
+        )
+    for name, digest in value.items():
+        if (
+            not isinstance(digest, str)
+            or len(digest) != 64
+            or any(character not in "0123456789abcdefABCDEF" for character in digest)
+        ):
+            raise MatrixError("{}.{} must be a SHA256 hex digest".format(label, name))
 
 
 def _read_json(path: Path) -> Dict[str, object]:
@@ -101,7 +158,13 @@ def load_matrix(path: Path) -> Dict[str, object]:
     for index, experiment in enumerate(matrix["experiments"]):
         if not isinstance(experiment, dict):
             raise MatrixError("experiments[{}] must be an object".format(index))
-        allowed = {"name", "split_manifest", "degradation_manifest", "args"}
+        allowed = {
+            "name",
+            "split_manifest",
+            "degradation_manifest",
+            "expected_input_sha256",
+            "args",
+        }
         missing_experiment = {"name", "split_manifest", "args"} - set(experiment)
         unknown_experiment = set(experiment) - allowed
         if missing_experiment or unknown_experiment:
@@ -132,6 +195,10 @@ def load_matrix(path: Path) -> Dict[str, object]:
             raise MatrixError("degradation_manifest must be null or a path string")
         if not isinstance(experiment["args"], dict):
             raise MatrixError("experiment args must be an object")
+        _validate_expected_hashes(
+            experiment.get("expected_input_sha256"),
+            "experiments[{}].expected_input_sha256".format(index),
+        )
         for label, arguments in (
             ("common_args", matrix["common_args"]),
             ("experiments[{}].args".format(index), experiment["args"]),
@@ -143,6 +210,11 @@ def load_matrix(path: Path) -> Dict[str, object]:
                         label, ", ".join(sorted(reserved))
                     )
                 )
+        resolved_arguments = dict(matrix["common_args"])
+        resolved_arguments.update(experiment["args"])
+        _validate_aux_loss_arguments(
+            resolved_arguments, "experiments[{}]".format(index)
+        )
     return matrix
 
 
@@ -320,12 +392,21 @@ def run_experiment(
     skip_train: bool,
     skip_render: bool,
     allow_existing: bool,
+    expected_input_hashes: Optional[Mapping[str, str]] = None,
 ) -> None:
     if output_path.exists() and not allow_existing:
         raise FileExistsError(
             "refusing to reuse existing experiment output: {}".format(output_path)
         )
     input_hashes = _input_hashes(train_command)
+    if expected_input_hashes:
+        mismatches = {
+            name: (expected.lower(), input_hashes.get(name))
+            for name, expected in expected_input_hashes.items()
+            if input_hashes.get(name) != expected.lower()
+        }
+        if mismatches:
+            raise ValueError("input SHA256 mismatch: {}".format(mismatches))
     output_path.mkdir(parents=True, exist_ok=True)
     run_manifest_path = output_path / "run_manifest.json"
     stdout_path = output_path / "stdout.log"
@@ -340,6 +421,10 @@ def run_experiment(
         "platform": platform.platform(),
         "git": _git_metadata(),
         "input_file_sha256": input_hashes,
+        "expected_input_file_sha256": {
+            name: digest.lower()
+            for name, digest in (expected_input_hashes or {}).items()
+        },
         "train_command": train_command,
         "render_command": render_command,
         "log_files": {"stdout": "stdout.log", "stderr": "stderr.log"},
@@ -421,6 +506,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
                     args.skip_train,
                     args.skip_render,
                     args.allow_existing,
+                    experiment.get("expected_input_sha256"),
                 )
     except (MatrixError, OSError, TypeError, ValueError) as exc:
         parser.error(str(exc))

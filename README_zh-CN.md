@@ -147,6 +147,30 @@ edge_gamma     = 3
 
 这些数值只是预注册的起点，必须在验证集上选择，不能根据最终测试集结果反向调参。
 
+### Priority-1：滤波域边缘一致性
+
+`--aux_loss_version` 默认是 `legacy`，因此旧命令和旧配置仍使用上面的完整辅助损失。新增的
+`filtered_edge` 模式只保留一个小权重边缘项，并要求
+`lambda_thermal=0`、`lambda_smooth=0`；非法组合会在加载场景前报错。
+
+新模式先将 TCM 后、未 clamp 的预测图和同一份含噪训练观测转换为固定 BT.601 单通道亮度，
+再对两条分支施加相同的 5x5、`sigma=1.0`、reflect-padding Gaussian 滤波。随后以
+reflect-padding、`/8` 尺度的有符号 Sobel 分量计算：
+
+```text
+L_edge_filtered = 0.5 * (
+    mean(|Sobel_x(G(I_pred)) - Sobel_x(G(I_obs))|)
+  + mean(|Sobel_y(G(I_pred)) - Sobel_y(G(I_obs))|)
+)
+
+L_total = L_baseline + 0.001 * L_edge_filtered
+```
+
+观测分支显式 stop-gradient，预测分支保留完整计算图；不做逐图 min-max，不读取干净训练图，
+也不改变推理渲染。`0.001` 只是本轮固定开发起点，不表示已经找到最优参数。四组 B0/O0/E1/E2
+验证配置见 [Priority-1 实验矩阵](configs/experiment_matrix.priority1_loss_revision.json)，实现与
+实验状态见 [Priority-1 修订记录](docs/priority1_loss_revision.md)。
+
 ## 项目结构
 
 ```text
@@ -582,7 +606,23 @@ runner 默认拒绝复用已有实验目录。每个实验在训练前写入 `ru
 - Python、平台、开始/结束时间；
 - `running`、`completed` 或 `failed` 状态。
 
-runner 会将训练和渲染子进程分别写入实验目录下的 `stdout.log` 和 `stderr.log`，主终端只显示实验开始、完成或失败状态。训练器默认每 1000 次迭代更新一次摘要；传入 `--quiet` 时关闭实时进度条，但仍保留检查点、验证和最终摘要。
+矩阵还可以为每个实验提供 `expected_input_sha256`。runner 会在创建输出目录前比较 dataset、
+split 和 degradation 清单哈希；任何不一致都会直接终止，避免在错误输入上生成实验结果。
+
+runner 会将训练和渲染子进程分别写入实验目录下的 `stdout.log` 和 `stderr.log`，主终端只显示实验开始、完成或失败状态。训练器默认每 1000 次迭代更新一次摘要；传入 `--quiet` 时关闭实时进度条，但仍保留辅助损失 resolved 配置、低频损失分项、检查点、验证和最终摘要。每次低频摘要也写入 `loss_components.csv`，未启用的 raw 项标记为 `disabled`，不会为日志额外执行辅助算子。
+
+安装 TensorBoard 后，训练器会每 5 秒刷新 event 文件。实时查看本轮四组实验：
+
+```powershell
+.\.venv\Scripts\python.exe -m tensorboard.main `
+  --logdir runs\priority1_loss_revision `
+  --host 127.0.0.1 `
+  --port 6006 `
+  --reload_interval 5
+```
+
+浏览器打开 `http://127.0.0.1:6006/`。主要曲线位于 `train_loss/*`、`iter_time` 和
+`val/*`；disabled 的 raw 辅助项不会伪造数值，weighted 曲线会如实记录为 0。
 
 `--allow-existing` 会允许复用已有目录，应仅在明确理解覆盖风险时使用。
 

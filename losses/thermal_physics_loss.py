@@ -88,6 +88,103 @@ def _sobel_components(image: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
     )
 
 
+def _filtered_luminance(image: torch.Tensor, name: str) -> torch.Tensor:
+    image_4d, _ = _as_batched_image(image, name)
+    channels = image_4d.shape[1]
+    if channels == 1:
+        return image_4d
+    if channels != 3:
+        raise ValueError("{} must have exactly 1 or 3 channels".format(name))
+    weights = image_4d.new_tensor((0.299, 0.587, 0.114)).view(1, 3, 1, 1)
+    return (image_4d * weights).sum(dim=1, keepdim=True)
+
+
+def _require_reflect_padding(
+    image: torch.Tensor, padding: int, operator_name: str
+) -> None:
+    if image.shape[-2] <= padding or image.shape[-1] <= padding:
+        raise ValueError(
+            "{} requires height and width greater than reflect padding {}".format(
+                operator_name, padding
+            )
+        )
+
+
+def _filtered_gaussian_smooth(
+    image: torch.Tensor, kernel_size: int, sigma: float
+) -> torch.Tensor:
+    if isinstance(kernel_size, bool) or not isinstance(kernel_size, int):
+        raise TypeError("kernel_size must be an integer")
+    _validate_odd_kernel(kernel_size)
+    sigma = _require_nonnegative_finite(sigma, "sigma")
+    if sigma == 0:
+        raise ValueError("sigma must be positive")
+    radius = kernel_size // 2
+    _require_reflect_padding(image, radius, "Gaussian filter")
+    coordinates = torch.arange(
+        kernel_size, dtype=image.dtype, device=image.device
+    ) - radius
+    squared_radius = (
+        coordinates[:, None].square() + coordinates[None, :].square()
+    )
+    kernel = torch.exp(-squared_radius / (2.0 * sigma * sigma))
+    kernel = (kernel / kernel.sum()).view(1, 1, kernel_size, kernel_size)
+    padded = F.pad(image, (radius, radius, radius, radius), mode="reflect")
+    return F.conv2d(padded, kernel)
+
+
+def _filtered_sobel_components(
+    image: torch.Tensor,
+) -> Tuple[torch.Tensor, torch.Tensor]:
+    _require_reflect_padding(image, 1, "Sobel filter")
+    sobel_x = image.new_tensor(
+        [[-1.0, 0.0, 1.0], [-2.0, 0.0, 2.0], [-1.0, 0.0, 1.0]]
+    ) / 8.0
+    sobel_y = sobel_x.transpose(0, 1)
+    padded = F.pad(image, (1, 1, 1, 1), mode="reflect")
+    return (
+        F.conv2d(padded, sobel_x.view(1, 1, 3, 3)),
+        F.conv2d(padded, sobel_y.view(1, 1, 3, 3)),
+    )
+
+
+def filtered_edge_consistency_loss(
+    prediction: torch.Tensor,
+    observation: torch.Tensor,
+    kernel_size: int = 5,
+    sigma: float = 1.0,
+) -> torch.Tensor:
+    """Match signed Sobel gradients after identical Gaussian filtering.
+
+    Inputs must have shape ``(C,H,W)`` or ``(B,C,H,W)`` with one or three
+    channels. RGB inputs use fixed BT.601 luminance. The observation branch is
+    detached while the complete prediction branch remains differentiable.
+    """
+
+    prediction_4d, _ = _as_batched_image(prediction, "prediction")
+    observation_4d, _ = _as_batched_image(observation, "observation")
+    if prediction_4d.shape != observation_4d.shape:
+        raise ValueError("prediction and observation must have the same shape")
+    if prediction_4d.device != observation_4d.device:
+        raise ValueError("prediction and observation must be on the same device")
+    if prediction_4d.dtype != observation_4d.dtype:
+        raise ValueError("prediction and observation must have the same dtype")
+
+    prediction_luma = _filtered_luminance(prediction_4d, "prediction")
+    observation_luma = _filtered_luminance(
+        observation_4d, "observation"
+    ).detach()
+    prediction_smooth = _filtered_gaussian_smooth(
+        prediction_luma, kernel_size, sigma
+    )
+    observation_smooth = _filtered_gaussian_smooth(
+        observation_luma, kernel_size, sigma
+    )
+    pred_x, pred_y = _filtered_sobel_components(prediction_smooth)
+    obs_x, obs_y = _filtered_sobel_components(observation_smooth)
+    return 0.5 * ((pred_x - obs_x).abs().mean() + (pred_y - obs_y).abs().mean())
+
+
 def _normalize_per_image(value: torch.Tensor, eps: float) -> torch.Tensor:
     eps = _require_nonnegative_finite(eps, "eps")
     if eps == 0:
@@ -223,6 +320,9 @@ def thermal_physics_loss(
     lambda_smooth: float = 0.0,
     noise_beta: float = 5.0,
     edge_gamma: float = 3.0,
+    aux_loss_version: str = "legacy",
+    edge_filter_kernel: int = 5,
+    edge_filter_sigma: float = 1.0,
 ) -> Tuple[torch.Tensor, Dict[str, torch.Tensor]]:
     """Compose enabled loss terms and return ``(weighted_total, terms)``.
 
@@ -241,11 +341,37 @@ def thermal_physics_loss(
     lambda_thermal, lambda_edge, lambda_smooth = lambdas
     noise_beta = _require_nonnegative_finite(noise_beta, "noise_beta")
     edge_gamma = _require_nonnegative_finite(edge_gamma, "edge_gamma")
+    if aux_loss_version not in ("legacy", "filtered_edge"):
+        raise ValueError("aux_loss_version must be 'legacy' or 'filtered_edge'")
+    if aux_loss_version == "filtered_edge":
+        if lambda_thermal != 0 or lambda_smooth != 0:
+            raise ValueError(
+                "filtered_edge requires lambda_thermal == 0 and lambda_smooth == 0"
+            )
+        if isinstance(edge_filter_kernel, bool) or not isinstance(
+            edge_filter_kernel, int
+        ):
+            raise TypeError("edge_filter_kernel must be an integer")
+        _validate_odd_kernel(edge_filter_kernel)
+        edge_filter_sigma = _require_nonnegative_finite(
+            edge_filter_sigma, "edge_filter_sigma"
+        )
+        if edge_filter_sigma == 0:
+            raise ValueError("edge_filter_sigma must be positive")
     pred_4d, gt_4d = _prepare_pair(pred, gt)
     zero = pred_4d.new_zeros(())
     terms = {"thermal": zero, "edge": zero, "smooth": zero}
     if not any(value > 0 for value in lambdas):
         return zero, terms
+
+    if aux_loss_version == "filtered_edge":
+        terms["edge"] = filtered_edge_consistency_loss(
+            pred_4d,
+            gt_4d,
+            kernel_size=edge_filter_kernel,
+            sigma=edge_filter_sigma,
+        )
+        return lambda_edge * terms["edge"], terms
 
     if lambda_thermal > 0:
         reliability = compute_noise_reliability_map(gt_4d, beta=noise_beta)

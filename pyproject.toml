@@ -14,6 +14,7 @@ dependencies = [
 
 [project.optional-dependencies]
 figures = ["matplotlib>=3.5,<4"]
+monitoring = ["tensorboard>=2.14,<3"]
 
 [tool.setuptools.packages.find]
 where = ["src"]
