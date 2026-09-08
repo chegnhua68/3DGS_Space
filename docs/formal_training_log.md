@@ -86,23 +86,102 @@
 runner 将每个子进程分别写入实验目录的 `stdout.log` 与 `stderr.log`，主终端只显示开始、
 完成或失败状态。相机读取阶段也只保留总数和完成数，不再逐视角打印。
 
-## 4. 下一步：正式 30k 矩阵
+## 4. Priority 1：损失修订验证
 
-Phase 1 只完成了 seed 2026、Sparse-25、noise03 的 2k/7k 校准。正式实验仍需：
+### 4.1 实现验收
 
-1. 按计划生成全部条件与 seed `2026/2027/2028` 的输入清单；
-2. 对 baseline 和 proposed 使用完全相同的训练视角、噪声、初始化和优化预算；
-3. 每个运行执行 30,000 iterations，并保存/验证 `7,000/15,000/30,000`；
-4. 冻结超参数后单独渲染 39-view test，禁止训练期间查看 test 指标；
-5. 汇总每个条件的 mean/std 和逐视角配对结果。
+配置：`configs/experiment_matrix.priority1_loss_revision.json`
 
-启动正式矩阵前，先执行：
+输出：`runs/priority1_loss_revision/` 与 `results/priority1_loss_revision/`
 
-```powershell
-.\.venv\Scripts\python.exe scripts\run_experiments.py `
-  --matrix configs\experiment_matrix.example.json `
-  --dry-run
-```
+本阶段在原 Gaussian、ATF、TCM 和 baseline 损失之外保留 legacy 辅助损失，并新增
+`filtered_edge` 模式。实现和运行固定在干净 commit
+`dd5d6b139c2d3e899d0521240e87041ea622a155`（短写 `dd5d6b1`）。执行前后的验收事实为：
 
-确认输入路径、seed、迭代次数和输出目录后，再去掉 `--dry-run`。每次运行完成后，优先检查
-`run_manifest.json`、`stdout.log`、`stderr.log` 和对应的 `metrics_summary.md`。
+- 完整测试 **91/91 通过**，包含两项实际 CUDA 扩展测试；新损失专项测试 24/24 通过。
+- B0 与 E2 的 2-iteration CUDA smoke 均完成前向、反向、保存和 34-view val 渲染。
+- TensorBoard 2.21.0 的 1-iteration E2 检查生成有效 event；检查时本地服务返回 HTTP 200。
+- matrix dry-run 通过，四组命令的 source、三个 manifest、seed、分辨率、训练预算和 val
+  分区一致，仅损失参数与输出目录不同。
+- 四个 runner 清单记录的实际/预期输入 SHA256 均一致，Git status 为空，运行状态均为
+  `completed`；四个 `stderr.log` 均为 0 字节。
+- B0、O0、E1、E2 均从头训练至 7k，并保存 2k/7k checkpoint。每组在两个 checkpoint
+  上都生成 34 张 render 和 34 张同名 ground truth，配对检查全部为 34/34。
+
+本阶段沿用第 1 节的三个输入哈希。runner 在建输出目录前复核 manifest 文件哈希，adapter
+在加载时继续复核清单内部引用与逐图哈希。
+
+### 4.2 运行时与资源记录
+
+| 实验 | 模式与权重 | 训练耗时 | 7000 Gaussian 数 | `avg_ms` 范围 | 7000 `avg_ms` | CUDA allocator peak |
+| --- | --- | ---: | ---: | ---: | ---: | ---: |
+| B0 | legacy；0/0/0 | 7:40 | 24,876 | 40.62-53.99 ms | 53.99 ms | 597.1 MB |
+| O0 | legacy；0.1/0.01/0.001 | 8:41 | 27,325 | 47.92-61.69 ms | 61.69 ms | 597.3 MB |
+| E1 | legacy；0/0.001/0 | 8:00 | 27,253 | 43.19-56.85 ms | 56.85 ms | 598.3 MB |
+| E2 | filtered_edge；0/0.001/0 | 7:49 | 26,548 | 42.35-55.46 ms | 55.46 ms | 597.0 MB |
+
+权重列依次为 `lambda_thermal/lambda_edge/lambda_smooth`。训练耗时由日志中的 `[AUX]`
+到 `Training complete` 计算，包含相机加载、训练、内部 validation 和 checkpoint 保存，不包含
+独立 `render.py`。`avg_ms` 是每 500 iterations 记录一次的 CUDA event 累计平均，
+表中范围覆盖 500-7000 的 14 个日志点；它不是单步延迟分布，也不包含 validation、保存和
+独立渲染。峰值是 PyTorch allocator 统计，不是整卡显存占用。
+
+### 4.3 7000 iteration 主比较
+
+主表来自独立 `render.py` 生成的 val PNG 和冻结的 `tools/collect_metrics.py`，不是训练循环
+控制台的内部 validation 数值。LPIPS 按协议跳过，ROI mask 未冻结，二者均为
+`unavailable`。
+
+| 方法 | Views | PSNR ↑ | SSIM ↑ | T-MAE ↓ | E-MAE ↓ | Gradient preservation ↑ |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| B0 | 34 | 30.55578541 | 0.94624436 | 0.02609596 | 0.00655253 | **0.53585431** |
+| O0 | 34 | 30.02708431 | 0.94623453 | 0.02639369 | 0.00647433 | 0.53198543 |
+| E1 | 34 | 30.39146361 | 0.94625547 | 0.02625460 | 0.00653443 | 0.52984605 |
+| E2 | 34 | **30.64555695** | **0.94726418** | **0.02550185** | **0.00642407** | 0.53200635 |
+
+相对 B0 的 7k 变化为：
+
+| 方法 | ΔPSNR | ΔSSIM | ΔT-MAE | ΔE-MAE | ΔGradient preservation |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| O0 | -0.52870110 | -0.00000983 | +0.00029773 | -0.00007820 | -0.00386888 |
+| E1 | -0.16432180 | +0.00001111 | +0.00015864 | -0.00001810 | -0.00600826 |
+| E2 | +0.08977154 | +0.00101982 | -0.00059411 | -0.00012846 | -0.00384796 |
+
+E2 在本次 val 上相对 B0 提高 PSNR/SSIM，并降低 T-MAE/E-MAE，但 Gradient preservation
+下降。O0 和 E1 没有形成综合优势。E2 的幅度较小且存在梯度指标权衡，这一结果只支持继续
+评估该候选项，不证明它已经解决泛化问题。
+
+### 4.4 2000 iteration 次要检查
+
+| 方法 | Views | PSNR ↑ | SSIM ↑ | T-MAE ↓ | E-MAE ↓ | Gradient preservation ↑ |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| B0 | 34 | 29.60748353 | 0.94464562 | 0.02637973 | 0.00675459 | **0.55646594** |
+| O0 | 34 | 28.70891908 | 0.94206068 | 0.03090710 | 0.00674758 | 0.55075741 |
+| E1 | 34 | 29.62049671 | 0.94400735 | 0.02703862 | 0.00675309 | 0.54747425 |
+| E2 | 34 | **29.62912333** | **0.94483947** | 0.02679957 | **0.00669644** | 0.54170621 |
+
+2k 只作为早期训练检查，预先指定的主比较仍为 7k。
+
+### 4.5 评价路径与证据边界
+
+训练循环内部 validation 的路径是 `renderer -> clamp(0,1) -> +TCM -> metric`，而独立
+`render.py` 主路径是 `renderer -> +TCM -> PNG 保存`。这是既有差异，本轮没有同时修改；
+因此内部控制台指标与上述独立渲染主表可能略有不同，不能混合比较。
+
+本阶段只有 heated 单场景、Sparse-25 + noise03、seed 2026。没有多 seed 均值/标准差，
+也没有其他稀疏率、退化强度或场景证据。39-view test 始终未渲染、未计算且未人工查看，
+validation 趋势不能写成最终 test 结论。
+
+## 5. 当前停止点
+
+执行已按要求停止在 Priority 1 验收完成处，没有自动启动正式 30k、多 seed、超参数搜索或
+test。原正式计划仍未完成的部分包括：
+
+1. 生成并核验全部条件与 seed `2026/2027/2028` 的冻结输入；
+2. 对最终冻结方法和 B0 使用完全相同的 30,000-iteration 预算；
+3. 保存并只用 validation 检查 `7,000/15,000/30,000`；
+4. 方法冻结后才单独访问 39-view test；
+5. 汇总 mean/std 和逐视角配对统计。
+
+继续上述阶段需要新的明确执行决定；本记录不把 Priority 1 的单次 validation 结果冒充正式
+训练计划的最终复现结果。

@@ -45,7 +45,7 @@
 | 稀疏视角划分 | 生成确定性、互相嵌套的 100/50/25/12.5% 训练子集 | `tools/create_sparse_split.py` |
 | 红外退化 | 对 `train_selected` 应用噪声、降对比度、模糊或组合退化 | `tools/degrade_ir_dataset.py` |
 | Thermal3D-GS 适配 | 将清单选择映射到 COLMAP 相机，并逐文件校验 SHA256 | `integrations/thermal3dgs/manifest_adapter.py` |
-| 改进损失 | 噪声可靠性加权、热边缘保持和非边缘平滑 | `losses/thermal_physics_loss.py` |
+| 改进损失 | 保留 legacy 热红外辅助项，并提供双分支同滤波的边缘一致性模式 | `losses/thermal_physics_loss.py` |
 | 训练与渲染 | 训练 Gaussian、ATF、TCM，并按真实 `val`/`test` 分区输出 | `train.py`、`render.py` |
 | 批量实验 | 从 JSON 矩阵构造命令并记录输入哈希和代码快照 | `scripts/run_experiments.py` |
 | 指标汇总 | PSNR、SSIM、LPIPS、T-MAE、E-MAE、梯度保持和 ROI-MAE | `tools/collect_metrics.py` |
@@ -169,7 +169,8 @@ L_total = L_baseline + 0.001 * L_edge_filtered
 观测分支显式 stop-gradient，预测分支保留完整计算图；不做逐图 min-max，不读取干净训练图，
 也不改变推理渲染。`0.001` 只是本轮固定开发起点，不表示已经找到最优参数。四组 B0/O0/E1/E2
 验证配置见 [Priority-1 实验矩阵](configs/experiment_matrix.priority1_loss_revision.json)，实现与
-实验状态见 [Priority-1 修订记录](docs/priority1_loss_revision.md)。
+实验状态见 [Priority-1 修订记录](docs/priority1_loss_revision.md)，完整指标、相对 B0 差值和
+限制见 [Priority-1 结果报告](results/priority1_loss_revision/revision_report.md)。
 
 ## 项目结构
 
@@ -722,14 +723,29 @@ metrics_per_view.csv
 
 ## 当前验证状态
 
-截至 `2026-08-27`，本机已完成以下验证：
+截至 `2026-09-08`，本机已完成以下验证：
 
 - 本地只准备了 TI-NSD 的 `heated` 场景，共 307 个已注册视角；
 - 基础划分为 234 个训练池视角、34 个验证视角和 39 个测试视角；
 - 12.5% + noise03 生成 29 张无损 PNG，全部输出哈希通过验证；
 - 两个 CUDA 扩展成功构建和导入；
-- 68/68 个 unittest 通过，其中包含 KNN 数值对照和 rasterizer 前向/反向 CUDA 测试；
-- Python 模块编译、配置 JSON 解析和 `git diff --check` 均通过。
+- 91/91 个 unittest 通过，其中包含 KNN 数值对照和 rasterizer 前向/反向 CUDA 测试；
+- Priority-1 的 B0、O0、E1、E2 均从头完成 7000 iterations，并完成 2000/7000 两个检查点的 34-view validation 渲染；
+- 四组 `run_manifest.json` 均为 `completed`，输入哈希一致，`stderr.log` 为 0 字节；
+- Python 模块编译、配置 JSON 解析、matrix dry-run 和 `git diff --check` 均通过。
+
+Priority-1 的 7000 步主比较如下；LPIPS 按本轮规格跳过，ROI-MAE 因没有冻结 mask 而不报告：
+
+| 方法 | PSNR ↑ | SSIM ↑ | T-MAE ↓ | E-MAE ↓ | 梯度保持 ↑ |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| B0 | 30.55578541 | 0.94624436 | 0.02609596 | 0.00655253 | 0.53585431 |
+| O0 | 30.02708431 | 0.94623453 | 0.02639369 | 0.00647433 | 0.53198543 |
+| E1 | 30.39146361 | 0.94625547 | 0.02625460 | 0.00653443 | 0.52984605 |
+| E2 | 30.64555695 | 0.94726418 | 0.02550185 | 0.00642407 | 0.53200635 |
+
+E2 相对本轮 B0 的 PSNR、SSIM、T-MAE 和 E-MAE 同时改善，但 Gradient preservation 下降
+`0.00384796`。这是单场景、单 seed、7k 的开发证据，不能写成统计显著或跨场景优越性结论。
+2000/7000 汇总和逐视角数据位于 `results/priority1_loss_revision/`。
 
 seed 2026 的嵌套训练子集为：
 
@@ -740,7 +756,7 @@ seed 2026 的嵌套训练子集为：
 | 25% | 59 | 0.2521367521 |
 | 12.5% | 29 | 0.1239316239 |
 
-同一 12.5% split、同一 noise03 退化字节下的 10-iteration 配对 smoke 结果如下。两组均使用 `--resolution 4 --data_device cpu --load2gpu_on_the_fly`，即图像常驻 CPU、当前视角按需传入 GPU；这些结果不能与下方原始分辨率容量校准直接比较。
+较早的同一 12.5% split、同一 noise03 退化字节下的 10-iteration 配对 smoke 结果如下。两组均使用 `--resolution 4 --data_device cpu --load2gpu_on_the_fly`，即图像常驻 CPU、当前视角按需传入 GPU；这些结果不能与上面的原始分辨率 7k 结果直接比较。
 
 | 方法 | 视角 | PSNR | SSIM | T-MAE | E-MAE | 梯度保持 |
 | --- | ---: | ---: | ---: | ---: | ---: | ---: |
@@ -752,13 +768,14 @@ seed 2026 的嵌套训练子集为：
 这些数值都是工程 smoke，不是收敛结果，也不支持方法优越性结论。当前尚未完成：
 
 - 未发现与 TI-NSD `heated` 明确匹配的公开上游 checkpoint，当前未下载或使用任何预训练 checkpoint；
-- 正式 7k/30k baseline；
+- 冻结配置后的正式 30k baseline/proposed 矩阵；
 - 三个或更多预注册 seed 的均值和标准差；
 - 完整稀疏比例、噪声级别、弱纹理和消融矩阵；
 - LPIPS、固定 ROI-MAE 和最终 39-view test 报告；
 - 可用于论文结论的定量表和定性图。
 
-当前 `sparse-ir-development` 工作树仍有未提交和未跟踪修改，因此还不存在能够代表本扩展现状的已发布 commit。现有 runner 通过 Git 状态、diff 哈希和源码快照哈希记录每次 smoke 的实际代码内容。
+本轮四组运行均记录干净代码提交 `dd5d6b1`。runner 还保存 Git 状态、diff 哈希和源码快照哈希；
+结果文档在运行结束后单独更新，不会改变这四组训练实际使用的代码身份。
 
 完整历史时间线见 [实验日志](docs/experiment_log.md)；正式训练计划的逐阶段执行记录见
 [正式训练记录](docs/formal_training_log.md)。

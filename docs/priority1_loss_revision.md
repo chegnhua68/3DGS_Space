@@ -1,13 +1,13 @@
 # Priority 1 损失修订实施记录
 
 > 记录日期：2026-09-08<br>
-> 当前状态：源码审计、实现接线、回归测试、短步数兼容检查和 dry-run 已完成；四组 7k 验证待运行。本文不表示新损失已经优于旧方案。
+> 当前状态：源码审计、实现接线、91/91 回归测试、短步数兼容检查、TensorBoard 检查、dry-run、四组 7k 训练以及 2k/7k validation 渲染和指标收集均已完成。执行到 Priority 1 为止，未访问 test，也未启动 30k 或多 seed 实验。
 
 ## 1. 本轮范围
 
 本轮保留 Gaussian、ATF、TCM、原 L1/SSIM/角点项以及 legacy 辅助损失，仅新增可切换的 `filtered_edge` 边缘辅助项。没有加入可靠边缘掩膜、权重调度、增密策略修改、网络结构修改、推理后处理或干净训练参考监督。
 
-四组计划实验为 B0、O0、E1、E2，统一使用 Sparse-25、noise03、seed 2026、resolution 1，并从头训练到 7000 iterations。完整 7k 实验目前均为待运行状态，不能据此填写性能结论。
+四组实验为 B0、O0、E1、E2，统一使用 Sparse-25、noise03、seed 2026、resolution 1，并从头训练到 7000 iterations。四组均已完成；本文仅在这一冻结条件内比较 validation 结果，不将单场景、单 seed 观察写成泛化结论。
 
 ## 2. 源码接线审计
 
@@ -114,6 +114,8 @@ degradation_manifest.v1.json
 
 runner 在创建实验输出目录和启动子进程之前计算实际文件哈希；任一不一致即停止。成功进入运行后，`run_manifest.json` 同时记录实际哈希、预期哈希、完整训练/渲染命令、Git 状态和日志文件位置。adapter 随后还会校验 degradation manifest 内部引用哈希与逐视角输出哈希，这两层检查职责不同，均不能跳过。
 
+四份正式 `run_manifest.json` 的实际哈希与上述预期值逐项一致，状态均为 `completed`。运行代码固定在干净 commit `dd5d6b139c2d3e899d0521240e87041ea622a155`（短写 `dd5d6b1`），四份清单记录的 Git status 均为空、diff SHA256 均为空 diff 的标准摘要。
+
 ## 6. 最小训练日志
 
 Priority 1 矩阵设置 `quiet=true`、`log_interval=500`。runner 控制台只保留每组 train/render 的 started、completed 或 failed 生命周期消息；子进程的完整输出写入实验目录的 `stdout.log` 和 `stderr.log`，避免终端被 tqdm 和逐步输出淹没。
@@ -135,6 +137,8 @@ raw/weighted、迭代耗时以及里程碑 validation 指标；disabled 的 raw 
 的零值。服务入口为 `http://127.0.0.1:6006/`，日志根目录是
 `runs/priority1_loss_revision/`。
 
+实际四组训练的 `loss_components.csv` 均包含 14 行数据，对应 500 至 7000、间隔 500 的完整摘要；四个 `stderr.log` 均为 0 字节。TensorBoard 的 1-iteration E2 集成检查已生成 event 文件，并在检查时得到本地 HTTP 200。这里记录的是已完成的集成验证，不表示 TensorBoard 服务需要在训练结束后持续运行。
+
 ## 7. 已知的验证路径差异
 
 训练循环内部的 validation renderer 当前先对 Gaussian renderer 输出执行 `clamp(0, 1)`，再加 `TCM.step(image)`；训练损失路径则是 renderer 输出直接加 TCM，且 TCM 后不 clamp：
@@ -146,20 +150,72 @@ raw/weighted、迭代耗时以及里程碑 validation 指标；disabled 的 raw 
 
 这是本轮开始前已存在的差异，本轮不修改，以避免在损失修订实验中同时改变评价路径。解释 validation 数值时必须保留这一限制。独立 `render.py` 的主 render_set 路径是 renderer 后加 TCM，并由保存图像的既有流程处理；它与训练内部 validation 的 clamp 顺序也不完全相同。
 
+下文主表来自独立 `render.py` 写出的 PNG，再由冻结的 `tools/collect_metrics.py` 汇总；不是训练控制台内的 validation 数值。两条路径的 clamp 顺序不同，因此控制台 PSNR 与独立渲染指标可能有小幅差异，二者不能混作同一评价口径。
+
 ## 8. 第一批实验矩阵
 
 | ID | 模式 | `lambda_thermal` | `lambda_edge` | `lambda_smooth` | 当前状态 |
 | --- | --- | ---: | ---: | ---: | --- |
-| B0 | legacy | 0 | 0 | 0 | 待运行 |
-| O0 | legacy | 0.1 | 0.01 | 0.001 | 待运行 |
-| E1 | legacy | 0 | 0.001 | 0 | 待运行 |
-| E2 | filtered_edge | 0 | 0.001 | 0 | 待运行 |
+| B0 | legacy | 0 | 0 | 0 | 7k 完成 |
+| O0 | legacy | 0.1 | 0.01 | 0.001 | 7k 完成 |
+| E1 | legacy | 0 | 0.001 | 0 | 7k 完成 |
+| E2 | filtered_edge | 0 | 0.001 | 0 | 7k 完成 |
 
 共同条件：59 个 Sparse-25 训练视角、固定 noise03 退化、34 个未退化 validation 视角、seed 2026、resolution 1、`data_device=cpu`、`load2gpu_on_the_fly=true`、保存/验证 iterations 2000 和 7000。test 分区本轮不运行、不渲染、不查看。
 
 E1 与 E2 同时存在滤波域、边缘加权、padding、通道处理和归一化差异，因此后续结果只能比较两套完整辅助项方案，不能把差值单独归因于“滤波观测”。
 
-## 9. 验证状态
+## 9. 运行完整性与耗时
+
+四组均保存 2k、7k checkpoint，并在两个 checkpoint 上各生成 34 张 render 和 34 张同名 ground truth；配对检查全部为 34/34。7k 是 runner 完成后的最终渲染，2k 使用同一独立 renderer 补充渲染。整个过程只选择 `evaluation_partition=val`，没有渲染、计算或查看 39-view test。
+
+从各组 `stdout.log` 的 `[AUX]` 启动记录到 `Training complete` 计算，训练进程墙钟耗时为：
+
+| 实验 | 训练耗时 | 7000 最终 Gaussian 数 | `avg_ms` 记录范围 | 7000 `avg_ms` | CUDA allocator peak |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| B0 | 7:40 | 24,876 | 40.62-53.99 ms | 53.99 ms | 597.1 MB |
+| O0 | 8:41 | 27,325 | 47.92-61.69 ms | 61.69 ms | 597.3 MB |
+| E1 | 8:00 | 27,253 | 43.19-56.85 ms | 56.85 ms | 598.3 MB |
+| E2 | 7:49 | 26,548 | 42.35-55.46 ms | 55.46 ms | 597.0 MB |
+
+墙钟耗时包含相机加载、训练、内部 validation 和 checkpoint 保存，不包含独立 `render.py`。
+`avg_ms` 是训练器在 14 个日志点记录的、截至该 iteration 的 CUDA event 累计平均值；上表范围是这些累计平均值的最小到最大，不是单步延迟分布，也不含数据准备、validation、保存和独立渲染。因此它不能直接替代端到端墙钟耗时。显存同样是 PyTorch CUDA allocator 的峰值，不是系统层面的整卡占用。
+
+## 10. Validation 指标
+
+### 10.1 7000 iteration 主结果
+
+主比较使用 `results/priority1_loss_revision/val_7000/metrics_summary.csv`。LPIPS 按本轮约定跳过，ROI mask 未冻结，因此二者均为 `unavailable`。
+
+| 实验 | Views | PSNR ↑ | SSIM ↑ | T-MAE ↓ | E-MAE ↓ | Gradient preservation ↑ |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| B0 | 34 | 30.55578541 | 0.94624436 | 0.02609596 | 0.00655253 | **0.53585431** |
+| O0 | 34 | 30.02708431 | 0.94623453 | 0.02639369 | 0.00647433 | 0.53198543 |
+| E1 | 34 | 30.39146361 | 0.94625547 | 0.02625460 | 0.00653443 | 0.52984605 |
+| E2 | 34 | **30.64555695** | **0.94726418** | **0.02550185** | **0.00642407** | 0.53200635 |
+
+相对 B0 的变化如下；PSNR、SSIM、Gradient preservation 为正更好，T-MAE、E-MAE 为负更好：
+
+| 实验 | ΔPSNR | ΔSSIM | ΔT-MAE | ΔE-MAE | ΔGradient preservation |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| O0 | -0.52870110 | -0.00000983 | +0.00029773 | -0.00007820 | -0.00386888 |
+| E1 | -0.16432180 | +0.00001111 | +0.00015864 | -0.00001810 | -0.00600826 |
+| E2 | +0.08977154 | +0.00101982 | -0.00059411 | -0.00012846 | -0.00384796 |
+
+在这一次验证中，E2 相对 B0 提高 PSNR/SSIM，并降低 T-MAE/E-MAE，但 Gradient preservation 下降；O0 的 PSNR 和 T-MAE 明显差于 B0，E1 也没有形成综合优势。E2 的优势幅度较小，且梯度指标存在权衡，不能据此宣称已经解决泛化问题或确定收益来自某个单一算子差异。
+
+### 10.2 2000 iteration 次要结果
+
+| 实验 | Views | PSNR ↑ | SSIM ↑ | T-MAE ↓ | E-MAE ↓ | Gradient preservation ↑ |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| B0 | 34 | 29.60748353 | 0.94464562 | 0.02637973 | 0.00675459 | **0.55646594** |
+| O0 | 34 | 28.70891908 | 0.94206068 | 0.03090710 | 0.00674758 | 0.55075741 |
+| E1 | 34 | 29.62049671 | 0.94400735 | 0.02703862 | 0.00675309 | 0.54747425 |
+| E2 | 34 | **29.62912333** | **0.94483947** | 0.02679957 | **0.00669644** | 0.54170621 |
+
+2k 仅用于观察早期行为；预先指定的主比较仍是 7k，不能改用 2k 单项最优结果选择结论。
+
+## 11. 验证状态与停止边界
 
 截至本文记录时间：
 
@@ -169,7 +225,8 @@ E1 与 E2 同时存在滤波域、边缘加权、padding、通道处理和归一
 - TensorBoard 集成检查：**通过**。Python 3.11 环境使用 TensorBoard 2.21.0，1-iteration E2 event 文件包含 baseline、total、edge raw/weighted、thermal/smooth weighted 和 iter-time 标量；本地服务已在 `127.0.0.1:6006` 验证 HTTP 200。
 - Priority 1 matrix dry-run 与命令核对：**通过**。四组使用相同 source/dataset/split/degradation、seed 2026、resolution 1、7000 iterations 和 val 分区。
 - 输入文件 SHA256：**三项均与规格一致**；正式 runner 还会在每组创建目录前再次校验。
-- B0、O0、E1、E2 四组 7k 训练：**待运行**。
-- 2k/7k validation 渲染与指标收集：**待运行**。
+- B0、O0、E1、E2 四组 7k 训练：**全部完成**，四份 run manifest 均为 `completed`，`stderr.log` 均为 0 字节。
+- 2k/7k validation 渲染与指标收集：**全部完成**，每组每个 checkpoint 均为 34/34 配对。
+- test：**未访问**；本轮没有 test 渲染、指标或人工查看。
 
-只有这些步骤实际完成且对应 `run_manifest.json`、日志和指标文件存在后，才可更新本节。当前不得写“测试通过”“训练稳定”“指标提升”或“过滤噪声有效”等结果性描述。
+本轮在 Priority 1 验收后停止，没有自动追加 30k、多 seed、其他场景或超参数搜索。现有结果只覆盖 heated 单场景、Sparse-25 + noise03、seed 2026；尚不能报告均值/标准差，也不能把 validation 趋势当作最终 test 结论。
