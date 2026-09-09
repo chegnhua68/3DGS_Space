@@ -22,6 +22,7 @@ class ConfigParserTests(unittest.TestCase):
         parameters = OptimizationParams(parser)
         resolved = parameters.extract(parser.parse_args([]))
         self.assertEqual(resolved.aux_loss_version, "legacy")
+        self.assertEqual(resolved.edge_filter_mode, "gaussian")
         self.assertEqual(resolved.edge_filter_kernel, 5)
         self.assertEqual(resolved.edge_filter_sigma, 1.0)
 
@@ -33,6 +34,8 @@ class ConfigParserTests(unittest.TestCase):
                 [
                     "--aux_loss_version",
                     "filtered_edge",
+                    "--edge_filter_mode",
+                    "identity",
                     "--edge_filter_kernel",
                     "7",
                     "--edge_filter_sigma",
@@ -43,12 +46,14 @@ class ConfigParserTests(unittest.TestCase):
             )
         )
         self.assertEqual(resolved.aux_loss_version, "filtered_edge")
+        self.assertEqual(resolved.edge_filter_mode, "identity")
         self.assertEqual(resolved.edge_filter_kernel, 7)
         self.assertEqual(resolved.edge_filter_sigma, 1.5)
 
     def test_invalid_aux_loss_options_are_rejected_before_training(self):
         invalid = (
             ({"aux_loss_version": "unknown"}, "aux_loss_version"),
+            ({"edge_filter_mode": "bilateral"}, "edge_filter_mode"),
             ({"edge_filter_kernel": 4}, "positive odd"),
             ({"edge_filter_sigma": 0.0}, "positive"),
             (
@@ -65,12 +70,19 @@ class ConfigParserTests(unittest.TestCase):
                 with self.assertRaisesRegex((TypeError, ValueError), message):
                     validate_aux_loss_options(options)
 
-    def test_legacy_cfg_without_new_fields_remains_loadable(self):
-        parsed = _parse_cfg_namespace(
-            "Namespace(source_path='scene', lambda_edge=0.01)"
+    def test_old_cfg_without_edge_filter_mode_remains_loadable(self):
+        old_configs = (
+            "Namespace(source_path='scene', lambda_edge=0.01)",
+            (
+                "Namespace(aux_loss_version='filtered_edge', lambda_edge=0.001, "
+                "edge_filter_kernel=5, edge_filter_sigma=1.0)"
+            ),
         )
-        validate_aux_loss_options(parsed)
-        self.assertFalse(hasattr(parsed, "aux_loss_version"))
+        for old_config in old_configs:
+            with self.subTest(old_config=old_config):
+                parsed = _parse_cfg_namespace(old_config)
+                validate_aux_loss_options(parsed)
+                self.assertFalse(hasattr(parsed, "edge_filter_mode"))
 
     def test_evaluation_output_name_tracks_manifest_partition(self):
         self.assertEqual(evaluation_output_name("dataset.json", "val"), "val")

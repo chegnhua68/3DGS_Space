@@ -21,7 +21,8 @@ runs/
 checkpoints/
 results/**/*.csv
 results/**/*.md
-results/figures/
+results/**/*.png
+results/**/*.json
 
 # Generated sparse/degradation manifests
 splits/*.json

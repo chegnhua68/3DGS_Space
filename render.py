@@ -9,6 +9,7 @@
 # For inquiries contact  george.drettakis@inria.fr
 #
 
+import json
 import torch
 from scene import Scene, ATFModel, TCMModel
 import os
@@ -29,7 +30,23 @@ from gaussian_renderer import GaussianModel
 import imageio
 import numpy as np
 import math
+import tempfile
 import time
+
+
+def _write_json_atomic(path, value):
+    directory = os.path.dirname(path)
+    descriptor, temporary_path = tempfile.mkstemp(
+        prefix="." + os.path.basename(path) + ".", suffix=".tmp", dir=directory
+    )
+    try:
+        with os.fdopen(descriptor, "w", encoding="utf-8", newline="\n") as stream:
+            json.dump(value, stream, indent=2, sort_keys=True)
+            stream.write("\n")
+        os.replace(temporary_path, path)
+    finally:
+        if os.path.exists(temporary_path):
+            os.unlink(temporary_path)
 
 
 def render_set(model_path, load2gpu_on_the_fly, name, iteration, views, gaussians, pipeline, background, ATF, TCM, quiet=False):
@@ -41,6 +58,7 @@ def render_set(model_path, load2gpu_on_the_fly, name, iteration, views, gaussian
     makedirs(gts_path, exist_ok=True)
     makedirs(depth_path, exist_ok=True)
     render_time_list = []
+    render_wall_start = time.perf_counter()
 
     for idx, view in enumerate(tqdm(views, desc="Rendering", disable=quiet, mininterval=5.0)):
         if load2gpu_on_the_fly:
@@ -65,16 +83,37 @@ def render_set(model_path, load2gpu_on_the_fly, name, iteration, views, gaussian
         torchvision.utils.save_image(gt, os.path.join(gts_path, '{0:05d}'.format(idx) + ".png"))
         if load2gpu_on_the_fly:
             view.load2device('cpu')
-        
+    render_wall_seconds = time.perf_counter() - render_wall_start
+
     timing_path = os.path.join(
         model_path, name, "ours_{}".format(iteration), "render_time.txt"
     )
-    with open(timing_path, 'w') as f:
+    warmup_excluded = 5 if len(render_time_list) > 5 else 0
+    timing_samples = render_time_list[warmup_excluded:]
+    forward_mean_ms = float(np.mean(timing_samples)) if timing_samples else None
+    with open(timing_path, 'w', encoding="utf-8", newline="\n") as f:
         for t in render_time_list:
             f.write("%.2fms\n"%t)
-        timing_samples = render_time_list[5:] or render_time_list
-        if timing_samples:
-            f.write("Mean time: %.2fms\n" % np.mean(timing_samples))
+        if forward_mean_ms is not None:
+            f.write("Mean time: %.2fms\n" % forward_mean_ms)
+    _write_json_atomic(
+        os.path.join(
+            model_path, name, "ours_{}".format(iteration), "render_timing.json"
+        ),
+        {
+            "schema_version": 1,
+            "partition": name,
+            "iteration": iteration,
+            "wall_seconds": render_wall_seconds,
+            "num_views": len(views),
+            "forward_mean_ms": forward_mean_ms,
+            "forward_samples_total": len(render_time_list),
+            "warmup_excluded": warmup_excluded,
+            "forward_timed_samples": len(timing_samples),
+            "wall_scope": "render_set loop including device transfer and PNG writes; excludes model loading",
+            "forward_scope": "synchronized ATF, Gaussian renderer, and TCM; excludes PNG I/O",
+        },
+    )
 
 
 def interpolate_time(model_path, load2gpt_on_the_fly, name, iteration, views, gaussians, pipeline, background, ATF, TCM, quiet=False):

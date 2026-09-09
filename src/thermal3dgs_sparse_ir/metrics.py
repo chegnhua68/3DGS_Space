@@ -18,8 +18,15 @@ min/max stretched per image.
 from __future__ import annotations
 
 import csv
+import hashlib
+import inspect
+import json
 import math
+import os
+import platform
 from pathlib import Path
+import shutil
+import tempfile
 from typing import Any, Dict, Iterable, List, Mapping, Optional, Sequence, Tuple
 
 import numpy as np
@@ -48,6 +55,12 @@ METRIC_KEYS = (
 )
 SUMMARY_FIELDS = ("experiment", "num_views") + METRIC_KEYS
 PER_VIEW_FIELDS = ("experiment", "image") + METRIC_KEYS
+METRIC_OUTPUT_FILENAMES = {
+    "summary_csv": "metrics_summary.csv",
+    "summary_md": "metrics_summary.md",
+    "per_view_csv": "metrics_per_view.csv",
+    "manifest": "metrics_manifest.json",
+}
 
 
 def _as_bchw(image: torch.Tensor, name: str) -> torch.Tensor:
@@ -508,6 +521,79 @@ def _markdown_cell(value: Any) -> str:
     return _format_metric(value).replace("|", "\\|")
 
 
+def _sha256_file(path: Path) -> str:
+    digest = hashlib.sha256()
+    with Path(path).open("rb") as source:
+        for block in iter(lambda: source.read(1024 * 1024), b""):
+            digest.update(block)
+    return digest.hexdigest()
+
+
+def _experiment_inventory(
+    experiment: str,
+    method_dir: Path,
+    roi_mask_dir: Optional[Path],
+) -> Dict[str, Any]:
+    method_dir = Path(method_dir).resolve()
+    pairs = pair_experiment_images(method_dir, roi_mask_dir)
+    render_hashes = {name: _sha256_file(render) for name, render, _, _ in pairs}
+    gt_hashes = {name: _sha256_file(gt) for name, _, gt, _ in pairs}
+    mask_hashes = (
+        None
+        if roi_mask_dir is None
+        else {
+            name: _sha256_file(mask)
+            for name, _, _, mask in pairs
+            if mask is not None
+        }
+    )
+    digest_payload = {
+        "renders": render_hashes,
+        "gt": gt_hashes,
+        "roi_masks": mask_hashes,
+    }
+    digest = hashlib.sha256(
+        json.dumps(
+            digest_payload,
+            ensure_ascii=True,
+            separators=(",", ":"),
+            sort_keys=True,
+        ).encode("utf-8")
+    ).hexdigest()
+    file_count = len(render_hashes) + len(gt_hashes)
+    if mask_hashes is not None:
+        file_count += len(mask_hashes)
+    inventory: Dict[str, Any] = {
+        "name": experiment,
+        "method_dir": str(method_dir),
+        "renders": {
+            "directory": str((method_dir / "renders").resolve()),
+            "count": len(render_hashes),
+            "files": render_hashes,
+        },
+        "gt": {
+            "directory": str((method_dir / "gt").resolve()),
+            "count": len(gt_hashes),
+            "files": gt_hashes,
+        },
+        "inventory": {
+            "algorithm": "sha256",
+            "digest": digest,
+            "count": file_count,
+            "view_count": len(pairs),
+        },
+    }
+    if mask_hashes is None:
+        inventory["roi_masks"] = None
+    else:
+        inventory["roi_masks"] = {
+            "directory": str(Path(roi_mask_dir).resolve()),
+            "count": len(mask_hashes),
+            "files": mask_hashes,
+        }
+    return inventory
+
+
 def write_metric_outputs(
     output_dir: Path,
     summaries: Sequence[Mapping[str, Any]],
@@ -558,6 +644,150 @@ def write_metric_outputs(
     }
 
 
+def _metric_output_paths(output_dir: Path) -> Dict[str, Path]:
+    output_dir = Path(output_dir)
+    return {
+        key: output_dir / filename
+        for key, filename in METRIC_OUTPUT_FILENAMES.items()
+    }
+
+
+def _validate_metric_output_targets(
+    output_dir: Path, targets: Mapping[str, Path], overwrite: bool
+) -> None:
+    if output_dir.exists() and not output_dir.is_dir():
+        raise NotADirectoryError(
+            "metric output path is not a directory: {}".format(output_dir)
+        )
+    non_files = [
+        path for path in targets.values() if path.exists() and not path.is_file()
+    ]
+    if non_files:
+        raise IsADirectoryError(
+            "metric output target is not a regular file: {}".format(non_files[0])
+        )
+    existing = [path for path in targets.values() if path.exists()]
+    if existing and not overwrite:
+        raise FileExistsError(
+            "metric outputs already exist; pass overwrite=True to replace only the "
+            "four managed files: {}".format(", ".join(str(path) for path in existing))
+        )
+
+
+def _write_metric_manifest(
+    path: Path,
+    experiments: Sequence[Mapping[str, Any]],
+    staged_outputs: Mapping[str, Path],
+    skip_lpips: bool,
+    lpips_net: str,
+    device: torch.device,
+) -> None:
+    metrics_source = Path(__file__).resolve()
+    metrics_source_sha256 = _sha256_file(metrics_source)
+    if _official_ssim is None:
+        ssim_backend = "fallback"
+        ssim_implementation = {
+            "provider": "metrics_py",
+            "path": str(metrics_source),
+            "sha256": metrics_source_sha256,
+        }
+    else:
+        ssim_backend = "official"
+        raw_ssim_source = inspect.getsourcefile(_official_ssim)
+        if raw_ssim_source is None:
+            raise RuntimeError("unable to resolve the official SSIM source file")
+        ssim_source = Path(raw_ssim_source).resolve()
+        if not ssim_source.is_file():
+            raise RuntimeError(
+                "official SSIM source is not a regular file: {}".format(ssim_source)
+            )
+        ssim_implementation = {
+            "provider": "source_file",
+            "path": str(ssim_source),
+            "sha256": _sha256_file(ssim_source),
+        }
+    output_records = {
+        staged_path.name: {
+            "sha256": _sha256_file(staged_path),
+            "bytes": staged_path.stat().st_size,
+        }
+        for key, staged_path in staged_outputs.items()
+        if key != "manifest"
+    }
+    manifest = {
+        "schema": "thermal3dgs.metrics_manifest",
+        "schema_version": 1,
+        "kind": "metric_collection",
+        "source": {
+            "metrics_py": {
+                "path": str(metrics_source),
+                "sha256": metrics_source_sha256,
+            },
+            "ssim_backend": ssim_backend,
+            "ssim_implementation": ssim_implementation,
+            "runtime": {
+                "python": platform.python_version(),
+                "torch": torch.__version__,
+            },
+        },
+        "parameters": {
+            "skip_lpips": bool(skip_lpips),
+            "lpips_net": lpips_net,
+            "device": str(device),
+        },
+        "experiments": list(experiments),
+        "outputs": output_records,
+    }
+    with Path(path).open("w", encoding="utf-8", newline="\n") as output:
+        json.dump(manifest, output, ensure_ascii=True, indent=2, sort_keys=True)
+        output.write("\n")
+
+
+def _publish_metric_outputs(
+    staged_outputs: Mapping[str, Path],
+    targets: Mapping[str, Path],
+    overwrite: bool,
+) -> None:
+    """Publish managed files with rollback on exceptions; callers must serialize."""
+
+    output_dir = next(iter(targets.values())).parent
+    _validate_metric_output_targets(output_dir, targets, overwrite)
+    stage_dir = next(iter(staged_outputs.values())).parent
+    backup_dir = stage_dir.parent / "backup"
+    backup_dir.mkdir()
+    backed_up: List[Tuple[Path, Path]] = []
+    installed: List[Path] = []
+    try:
+        if overwrite:
+            for key, target in targets.items():
+                if target.exists():
+                    backup = backup_dir / METRIC_OUTPUT_FILENAMES[key]
+                    os.replace(str(target), str(backup))
+                    backed_up.append((backup, target))
+        for key, staged in staged_outputs.items():
+            target = targets[key]
+            os.replace(str(staged), str(target))
+            installed.append(target)
+    except Exception:
+        rollback_errors: List[Exception] = []
+        for target in reversed(installed):
+            try:
+                if target.exists():
+                    target.unlink()
+            except Exception as exc:
+                rollback_errors.append(exc)
+        for backup, target in reversed(backed_up):
+            try:
+                os.replace(str(backup), str(target))
+            except Exception as exc:
+                rollback_errors.append(exc)
+        if rollback_errors:
+            raise RuntimeError(
+                "metric output publication failed and rollback was incomplete"
+            ) from rollback_errors[0]
+        raise
+
+
 def collect_metrics(
     experiments: Sequence[Tuple[str, Path]],
     output_dir: Path = Path("results"),
@@ -565,9 +795,15 @@ def collect_metrics(
     skip_lpips: bool = False,
     lpips_net: str = "vgg",
     device: Optional[torch.device] = None,
+    overwrite: bool = False,
 ) -> Dict[str, Path]:
-    """Evaluate named experiments and write summary plus per-view tables."""
+    """Evaluate and publish tables with handled-error rollback.
 
+    This is a single-writer API. Callers must serialize access to ``output_dir``.
+    """
+
+    if not isinstance(overwrite, bool):
+        raise TypeError("overwrite must be boolean")
     if not experiments:
         raise ValueError("at least one experiment is required")
     names = [name for name, _ in experiments]
@@ -582,20 +818,55 @@ def collect_metrics(
         raise ValueError(
             "ROI masks reference unknown experiments: {}".format(", ".join(unknown_roi))
         )
+    output_dir = Path(output_dir)
+    targets = _metric_output_paths(output_dir)
+    _validate_metric_output_targets(output_dir, targets, overwrite)
+    output_dir.mkdir(parents=True, exist_ok=True)
     if device is None:
         device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     lpips_model = None if skip_lpips else create_lpips_model(device, lpips_net)
 
     summaries: List[Mapping[str, Any]] = []
     per_view_rows: List[Mapping[str, Any]] = []
+    inventories: List[Mapping[str, Any]] = []
     for name, method_dir in sorted(experiments, key=lambda item: item[0]):
+        roi_mask_dir = roi_mask_dirs.get(name)
+        inventory_before = _experiment_inventory(
+            name, Path(method_dir), roi_mask_dir
+        )
         summary, rows = evaluate_experiment(
             name,
             Path(method_dir),
             device,
             lpips_model=lpips_model,
-            roi_mask_dir=roi_mask_dirs.get(name),
+            roi_mask_dir=roi_mask_dir,
         )
+        inventory_after = _experiment_inventory(
+            name, Path(method_dir), roi_mask_dir
+        )
+        if inventory_after != inventory_before:
+            raise RuntimeError(
+                "metric input files changed during evaluation: {}".format(name)
+            )
         summaries.append(summary)
         per_view_rows.extend(rows)
-    return write_metric_outputs(output_dir, summaries, per_view_rows)
+        inventories.append(inventory_before)
+
+    staging_root = Path(tempfile.mkdtemp(prefix=".metrics-stage-", dir=str(output_dir)))
+    try:
+        stage_dir = staging_root / "new"
+        staged_outputs = write_metric_outputs(stage_dir, summaries, per_view_rows)
+        manifest_path = stage_dir / METRIC_OUTPUT_FILENAMES["manifest"]
+        staged_outputs["manifest"] = manifest_path
+        _write_metric_manifest(
+            manifest_path,
+            inventories,
+            staged_outputs,
+            skip_lpips,
+            lpips_net,
+            device,
+        )
+        _publish_metric_outputs(staged_outputs, targets, overwrite)
+    finally:
+        shutil.rmtree(staging_root, ignore_errors=True)
+    return targets

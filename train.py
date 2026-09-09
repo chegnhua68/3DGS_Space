@@ -11,6 +11,7 @@
 
 import os
 import csv
+import math
 import torch
 from random import randint
 # cq:import corners_loss
@@ -42,6 +43,10 @@ except ImportError:
 LOSS_COMPONENT_FIELDS = (
     "iteration",
     "aux_loss_version",
+    "edge_filter_mode",
+    "filter_active",
+    "edge_filter_kernel",
+    "edge_filter_sigma",
     "lambda_thermal",
     "lambda_edge",
     "lambda_smooth",
@@ -93,31 +98,42 @@ def training(
     validate_aux_loss_options(opt)
     thermal_weights = (opt.lambda_thermal, opt.lambda_edge, opt.lambda_smooth)
     aux_loss_version = getattr(opt, "aux_loss_version", "legacy")
+    edge_filter_mode = getattr(opt, "edge_filter_mode", "gaussian")
     edge_filter_kernel = getattr(opt, "edge_filter_kernel", 5)
     edge_filter_sigma = getattr(opt, "edge_filter_sigma", 1.0)
     tb_writer = prepare_output_and_logger(dataset, run_config)
     loss_component_path = _initialize_loss_component_log(dataset.model_path)
     auxiliary_enabled = any(weight > 0 for weight in thermal_weights)
-    print(
-        "[AUX] version={} enabled={} lambda_thermal={:g} lambda_edge={:g} "
-        "lambda_smooth={:g} filter={} noise_beta={} edge_gamma={}".format(
-            aux_loss_version,
-            str(auxiliary_enabled).lower(),
-            opt.lambda_thermal,
-            opt.lambda_edge,
-            opt.lambda_smooth,
-            (
-                "{}x{}/sigma={:g}".format(
-                    edge_filter_kernel, edge_filter_kernel, edge_filter_sigma
-                )
-                if aux_loss_version == "filtered_edge"
-                else "disabled"
-            ),
-            opt.noise_beta if aux_loss_version == "legacy" else "disabled",
-            opt.edge_gamma if aux_loss_version == "legacy" else "disabled",
-        ),
-        flush=True,
+    filter_active = bool(
+        auxiliary_enabled
+        and aux_loss_version == "filtered_edge"
+        and opt.lambda_edge > 0
+        and edge_filter_mode == "gaussian"
     )
+    filter_kernel_log = edge_filter_kernel if filter_active else "inactive"
+    filter_sigma_log = edge_filter_sigma if filter_active else "inactive"
+    aux_summary_parts = [
+        "version={}".format(aux_loss_version),
+        "enabled={}".format(str(auxiliary_enabled).lower()),
+        "edge_filter_mode={}".format(edge_filter_mode),
+        "filter_active={}".format(str(filter_active).lower()),
+        "edge_filter_kernel={}".format(filter_kernel_log),
+        "edge_filter_sigma={}".format(filter_sigma_log),
+        "lambda_thermal={:g}".format(opt.lambda_thermal),
+        "lambda_edge={:g}".format(opt.lambda_edge),
+        "lambda_smooth={:g}".format(opt.lambda_smooth),
+    ]
+    if aux_loss_version == "legacy" and auxiliary_enabled:
+        aux_summary_parts.extend(
+            (
+                "noise_beta={:g}".format(opt.noise_beta),
+                "edge_gamma={:g}".format(opt.edge_gamma),
+            )
+        )
+    aux_summary = " ".join(aux_summary_parts)
+    print("[AUX] " + aux_summary, flush=True)
+    if tb_writer:
+        tb_writer.add_text("config/auxiliary_loss", aux_summary, 0)
     gaussians = GaussianModel(dataset.sh_degree)
     ATF = ATFModel(dataset.is_blender)
     ATF.train_setting(opt)
@@ -240,6 +256,7 @@ def training(
                 noise_beta=opt.noise_beta,
                 edge_gamma=opt.edge_gamma,
                 aux_loss_version=aux_loss_version,
+                edge_filter_mode=edge_filter_mode,
                 edge_filter_kernel=edge_filter_kernel,
                 edge_filter_sigma=edge_filter_sigma,
             )
@@ -247,6 +264,15 @@ def training(
         loss.backward()
 
         iter_end.record()
+        loss_value = float(loss.detach().item())
+        if not math.isfinite(loss_value):
+            if tb_writer:
+                tb_writer.flush()
+            raise FloatingPointError(
+                "non-finite training loss at iteration {}: {}".format(
+                    iteration, loss_value
+                )
+            )
 
         if dataset.load2gpu_on_the_fly:
             viewpoint_cam.load2device('cpu')
@@ -254,7 +280,7 @@ def training(
         with torch.no_grad():
             elapsed_ms = iter_start.elapsed_time(iter_end)
             total_elapsed_ms += elapsed_ms
-            ema_loss_for_log = 0.4 * loss.item() + 0.6 * ema_loss_for_log
+            ema_loss_for_log = 0.4 * loss_value + 0.6 * ema_loss_for_log
             progress_bar.update(1)
             if iteration % log_interval == 0 or iteration == opt.iterations:
                 progress_bar.set_postfix({"loss": f"{ema_loss_for_log:.6f}"})
@@ -273,6 +299,10 @@ def training(
                 component_row = {
                     "iteration": iteration,
                     "aux_loss_version": aux_loss_version,
+                    "edge_filter_mode": edge_filter_mode,
+                    "filter_active": str(filter_active).lower(),
+                    "edge_filter_kernel": filter_kernel_log,
+                    "edge_filter_sigma": filter_sigma_log,
                     "lambda_thermal": opt.lambda_thermal,
                     "lambda_edge": opt.lambda_edge,
                     "lambda_smooth": opt.lambda_smooth,
@@ -289,30 +319,47 @@ def training(
                     "peak_cuda_mb": peak_memory_mb,
                 }
                 _append_loss_component_log(loss_component_path, component_row)
-                print(
-                    "[ITER {}] aux_loss_version={} lambda_thermal={:g} lambda_edge={:g} lambda_smooth={:g} "
-                    "L_baseline={:.6f} L_thermal_raw={} L_edge_raw={} L_smooth_raw={} "
-                    "weighted_L_thermal={:.6f} weighted_L_edge={:.6f} weighted_L_smooth={:.6f} "
-                    "L_total={:.6f} points={} avg_ms={:.2f} peak_cuda_mb={:.1f}".format(
-                        iteration,
-                        aux_loss_version,
-                        opt.lambda_thermal,
-                        opt.lambda_edge,
-                        opt.lambda_smooth,
-                        component_row["L_baseline"],
-                        raw_thermal if raw_thermal == "disabled" else "{:.6f}".format(raw_thermal),
-                        raw_edge if raw_edge == "disabled" else "{:.6f}".format(raw_edge),
-                        raw_smooth if raw_smooth == "disabled" else "{:.6f}".format(raw_smooth),
-                        weighted_thermal,
-                        weighted_edge,
-                        weighted_smooth,
-                        component_row["L_total"],
-                        gaussians.get_xyz.shape[0],
-                        average_ms,
-                        peak_memory_mb,
-                    ),
-                    flush=True,
+                iteration_summary = [
+                    "[ITER {}]".format(iteration),
+                    "version={}".format(aux_loss_version),
+                    "edge_filter_mode={}".format(edge_filter_mode),
+                    "filter_active={}".format(str(filter_active).lower()),
+                    "lambda_edge={:g}".format(opt.lambda_edge),
+                    "L_baseline={:.6f}".format(component_row["L_baseline"]),
+                ]
+                if opt.lambda_thermal > 0:
+                    iteration_summary.extend(
+                        (
+                            "L_thermal_raw={:.6f}".format(raw_thermal),
+                            "weighted_L_thermal={:.6f}".format(weighted_thermal),
+                        )
+                    )
+                iteration_summary.extend(
+                    (
+                        "L_edge_raw={}".format(
+                            raw_edge
+                            if raw_edge == "disabled"
+                            else "{:.6f}".format(raw_edge)
+                        ),
+                        "weighted_L_edge={:.6f}".format(weighted_edge),
+                    )
                 )
+                if opt.lambda_smooth > 0:
+                    iteration_summary.extend(
+                        (
+                            "L_smooth_raw={:.6f}".format(raw_smooth),
+                            "weighted_L_smooth={:.6f}".format(weighted_smooth),
+                        )
+                    )
+                iteration_summary.extend(
+                    (
+                        "L_total={:.6f}".format(component_row["L_total"]),
+                        "points={}".format(gaussians.get_xyz.shape[0]),
+                        "avg_ms={:.2f}".format(average_ms),
+                        "peak_cuda_mb={:.1f}".format(peak_memory_mb),
+                    )
+                )
+                print(" ".join(iteration_summary), flush=True)
 
             # Keep track of max radii in image-space for pruning
             gaussians.max_radii2D[visibility_filter] = torch.max(gaussians.max_radii2D[visibility_filter],

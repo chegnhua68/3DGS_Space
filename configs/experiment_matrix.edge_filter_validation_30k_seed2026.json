@@ -1,0 +1,67 @@
+{
+  "schema_version": 1,
+  "source_path": "data/TI-NSD/heated",
+  "dataset_manifest": "data/TI-NSD/heated/dataset_manifest.v1.json",
+  "output_root": "runs/edge_filter_validation_30k",
+  "common_args": {
+    "aux_loss_version": "legacy",
+    "data_device": "cpu",
+    "edge_filter_kernel": 5,
+    "edge_filter_mode": "gaussian",
+    "edge_filter_sigma": 1.0,
+    "evaluation_partition": "val",
+    "eval": true,
+    "iterations": 30000,
+    "load2gpu_on_the_fly": true,
+    "log_interval": 500,
+    "quiet": true,
+    "resolution": 1,
+    "save_iterations": [
+      2000,
+      7000,
+      15000,
+      30000
+    ],
+    "seed": 2026,
+    "test_iterations": [
+      2000,
+      7000,
+      15000,
+      30000
+    ]
+  },
+  "experiments": [
+    {
+      "name": "B0_trainseed2026",
+      "split_manifest": "data/TI-NSD/heated/splits/seed2026/sparse_nested-random_25.json",
+      "degradation_manifest": "data/TI-NSD/heated/derived/noise03_sparse25_seed2026/degradation_manifest.v1.json",
+      "expected_input_sha256": {
+        "dataset_manifest": "d4fe9c97ed110fa1ecdf0636a19f7a7062169d3cfbd719d5594158f9d615e919",
+        "split_manifest": "c9a1e0aa65e54e1558779b557539cb2eaba4d1faab765b786a4437aa519ba79e",
+        "degradation_manifest": "06d68ec82b7faa8d65168b9bd2b35f013207331f4683a2ec0ad883837be3f03b"
+      },
+      "args": {
+        "lambda_edge": 0.0,
+        "lambda_smooth": 0.0,
+        "lambda_thermal": 0.0
+      }
+    },
+    {
+      "name": "E2_trainseed2026",
+      "split_manifest": "data/TI-NSD/heated/splits/seed2026/sparse_nested-random_25.json",
+      "degradation_manifest": "data/TI-NSD/heated/derived/noise03_sparse25_seed2026/degradation_manifest.v1.json",
+      "expected_input_sha256": {
+        "dataset_manifest": "d4fe9c97ed110fa1ecdf0636a19f7a7062169d3cfbd719d5594158f9d615e919",
+        "split_manifest": "c9a1e0aa65e54e1558779b557539cb2eaba4d1faab765b786a4437aa519ba79e",
+        "degradation_manifest": "06d68ec82b7faa8d65168b9bd2b35f013207331f4683a2ec0ad883837be3f03b"
+      },
+      "args": {
+        "aux_loss_version": "filtered_edge",
+        "edge_filter_mode": "gaussian",
+        "lambda_edge": 0.001,
+        "lambda_smooth": 0.0,
+        "lambda_thermal": 0.0
+      }
+    }
+  ]
+}

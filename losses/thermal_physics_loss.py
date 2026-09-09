@@ -110,6 +110,12 @@ def _require_reflect_padding(
         )
 
 
+def _validate_edge_filter_mode(edge_filter_mode: str) -> str:
+    if edge_filter_mode not in ("gaussian", "identity"):
+        raise ValueError("edge_filter_mode must be 'gaussian' or 'identity'")
+    return edge_filter_mode
+
+
 def _filtered_gaussian_smooth(
     image: torch.Tensor, kernel_size: int, sigma: float
 ) -> torch.Tensor:
@@ -153,14 +159,24 @@ def filtered_edge_consistency_loss(
     observation: torch.Tensor,
     kernel_size: int = 5,
     sigma: float = 1.0,
+    edge_filter_mode: str = "gaussian",
 ) -> torch.Tensor:
-    """Match signed Sobel gradients after identical Gaussian filtering.
+    """Match signed Sobel gradients after an identical fixed filter.
 
     Inputs must have shape ``(C,H,W)`` or ``(B,C,H,W)`` with one or three
     channels. RGB inputs use fixed BT.601 luminance. The observation branch is
     detached while the complete prediction branch remains differentiable.
+    ``edge_filter_mode='identity'`` skips only Gaussian filtering; both modes
+    share the same luminance and signed Sobel implementation.
     """
 
+    edge_filter_mode = _validate_edge_filter_mode(edge_filter_mode)
+    if isinstance(kernel_size, bool) or not isinstance(kernel_size, int):
+        raise TypeError("kernel_size must be an integer")
+    _validate_odd_kernel(kernel_size)
+    sigma = _require_nonnegative_finite(sigma, "sigma")
+    if sigma == 0:
+        raise ValueError("sigma must be positive")
     prediction_4d, _ = _as_batched_image(prediction, "prediction")
     observation_4d, _ = _as_batched_image(observation, "observation")
     if prediction_4d.shape != observation_4d.shape:
@@ -174,14 +190,18 @@ def filtered_edge_consistency_loss(
     observation_luma = _filtered_luminance(
         observation_4d, "observation"
     ).detach()
-    prediction_smooth = _filtered_gaussian_smooth(
-        prediction_luma, kernel_size, sigma
-    )
-    observation_smooth = _filtered_gaussian_smooth(
-        observation_luma, kernel_size, sigma
-    )
-    pred_x, pred_y = _filtered_sobel_components(prediction_smooth)
-    obs_x, obs_y = _filtered_sobel_components(observation_smooth)
+    if edge_filter_mode == "gaussian":
+        prediction_filtered = _filtered_gaussian_smooth(
+            prediction_luma, kernel_size, sigma
+        )
+        observation_filtered = _filtered_gaussian_smooth(
+            observation_luma, kernel_size, sigma
+        )
+    else:
+        prediction_filtered = prediction_luma
+        observation_filtered = observation_luma
+    pred_x, pred_y = _filtered_sobel_components(prediction_filtered)
+    obs_x, obs_y = _filtered_sobel_components(observation_filtered)
     return 0.5 * ((pred_x - obs_x).abs().mean() + (pred_y - obs_y).abs().mean())
 
 
@@ -323,6 +343,7 @@ def thermal_physics_loss(
     aux_loss_version: str = "legacy",
     edge_filter_kernel: int = 5,
     edge_filter_sigma: float = 1.0,
+    edge_filter_mode: str = "gaussian",
 ) -> Tuple[torch.Tensor, Dict[str, torch.Tensor]]:
     """Compose enabled loss terms and return ``(weighted_total, terms)``.
 
@@ -343,6 +364,7 @@ def thermal_physics_loss(
     edge_gamma = _require_nonnegative_finite(edge_gamma, "edge_gamma")
     if aux_loss_version not in ("legacy", "filtered_edge"):
         raise ValueError("aux_loss_version must be 'legacy' or 'filtered_edge'")
+    edge_filter_mode = _validate_edge_filter_mode(edge_filter_mode)
     if aux_loss_version == "filtered_edge":
         if lambda_thermal != 0 or lambda_smooth != 0:
             raise ValueError(
@@ -370,6 +392,7 @@ def thermal_physics_loss(
             gt_4d,
             kernel_size=edge_filter_kernel,
             sigma=edge_filter_sigma,
+            edge_filter_mode=edge_filter_mode,
         )
         return lambda_edge * terms["edge"], terms
 

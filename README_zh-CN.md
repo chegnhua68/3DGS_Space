@@ -172,6 +172,45 @@ L_total = L_baseline + 0.001 * L_edge_filtered
 实验状态见 [Priority-1 修订记录](docs/priority1_loss_revision.md)，完整指标、相对 B0 差值和
 限制见 [Priority-1 结果报告](results/priority1_loss_revision/revision_report.md)。
 
+### Step 2：Gaussian / Identity 单因素消融
+
+`filtered_edge` 内新增 `--edge_filter_mode {gaussian,identity}`，默认 `gaussian`。Identity
+只跳过预测和观测分支的 Gaussian 及其 reflect padding；BT.601 亮度、观测 stop-gradient、
+有符号 `/8` Sobel、Sobel reflect padding、绝对误差、均值和 0.5 系数均与 E2 共用。
+
+```powershell
+# 三组 7k：B0、E2_no_filter、E2
+.\.venv\Scripts\python.exe scripts\run_experiments.py `
+  --matrix configs\experiment_matrix.edge_filter_ablation_7k.json `
+  --dry-run
+
+# 30k 配置本阶段只检查，不去掉 --dry-run
+.\.venv\Scripts\python.exe scripts\run_experiments.py `
+  --matrix configs\experiment_matrix.edge_filter_validation_30k_seed2026.json `
+  --dry-run
+
+.\.venv\Scripts\python.exe scripts\run_experiments.py `
+  --matrix configs\experiment_matrix.edge_filter_validation_30k_extra_seeds.json `
+  --dry-run
+```
+
+Identity 仍显式保留 `edge_filter_kernel=5` 和 `edge_filter_sigma=1.0`，但启动日志会显示
+`filter_active=false` 以及参数 `inactive`。训练 CSV、TensorBoard 配置文本与 runner manifest
+都会记录模式和有效状态。完整冻结协议、固定定性视角及计时边界见
+[滤波单因素消融协议](docs/edge_filter_ablation_protocol.md)。
+
+Step 2 三组训练启动后，可用已安装的 TensorBoard 实时查看：
+
+```powershell
+tensorboard --logdir runs\edge_filter_ablation_7k `
+  --host 127.0.0.1 `
+  --port 6007 `
+  --reload_interval 5
+```
+
+浏览器地址为 `http://127.0.0.1:6007/`。该目录只包含本轮 B0、E2_no_filter 和 E2，
+不会与 Priority-1 的四组曲线混在一起。
+
 ## 项目结构
 
 ```text
@@ -551,6 +590,11 @@ runs/proposed_sparse12p5_noise03/val/ours_30000/
 $env:TORCH_HOME = 'E:\Software\TorchCache'
 ```
 
+指标收集器默认拒绝覆盖已有的受管结果；只有明确传入 `--overwrite` 才会替换四个受管文件，
+目录中的其他文件保持不动。`metrics_manifest.json` 记录逐图 render/GT SHA256、指标源码、
+实际 SSIM backend、Python/PyTorch 版本、运行参数和三个表格文件的哈希。收集前后会再次比较
+输入库存，评估期间图像发生变化时不会发布结果。
+
 ## 批量实验
 
 ### 实验矩阵
@@ -605,6 +649,7 @@ runner 默认拒绝复用已有实验目录。每个实验在训练前写入 `ru
 - dataset、split 和 degradation 清单文件 SHA256；
 - Git HEAD、工作树状态、diff 哈希和包含未跟踪源码的快照哈希；
 - Python、平台、开始/结束时间；
+- resolved 辅助损失/滤波状态，以及训练和最终渲染子进程的独立墙钟时间；
 - `running`、`completed` 或 `failed` 状态。
 
 矩阵还可以为每个实验提供 `expected_input_sha256`。runner 会在创建输出目录前比较 dataset、
@@ -719,6 +764,7 @@ runs/<experiment>/
 metrics_summary.csv
 metrics_summary.md
 metrics_per_view.csv
+metrics_manifest.json
 ```
 
 ## 当前验证状态

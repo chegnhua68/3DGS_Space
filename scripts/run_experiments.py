@@ -10,6 +10,7 @@ import platform
 import subprocess
 import sys
 import tempfile
+import time
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Dict, List, Mapping, Optional, Sequence, Tuple
@@ -40,6 +41,22 @@ def _validate_aux_loss_arguments(arguments: Mapping[str, object], label: str) ->
         raise MatrixError(
             "{}.aux_loss_version must be 'legacy' or 'filtered_edge'".format(label)
         )
+    filter_mode = arguments.get("edge_filter_mode", "gaussian")
+    if filter_mode not in ("gaussian", "identity"):
+        raise MatrixError(
+            "{}.edge_filter_mode must be 'gaussian' or 'identity'".format(label)
+        )
+    weights = {}
+    for name in ("lambda_thermal", "lambda_edge", "lambda_smooth"):
+        value = arguments.get(name, 0.0)
+        if (
+            isinstance(value, bool)
+            or not isinstance(value, (int, float))
+            or not math.isfinite(float(value))
+            or float(value) < 0
+        ):
+            raise MatrixError("{}.{} must be finite and non-negative".format(label, name))
+        weights[name] = float(value)
     kernel = arguments.get("edge_filter_kernel", 5)
     if isinstance(kernel, bool) or not isinstance(kernel, int):
         raise MatrixError("{}.edge_filter_kernel must be an integer".format(label))
@@ -56,17 +73,38 @@ def _validate_aux_loss_arguments(arguments: Mapping[str, object], label: str) ->
         )
     if version == "filtered_edge":
         for name in ("lambda_thermal", "lambda_smooth"):
-            value = arguments.get(name, 0.0)
-            if (
-                isinstance(value, bool)
-                or not isinstance(value, (int, float))
-                or not math.isfinite(float(value))
-            ):
-                raise MatrixError("{}.{} must be finite and numeric".format(label, name))
-            if float(value) != 0:
+            if weights[name] != 0:
                 raise MatrixError(
                     "filtered_edge requires lambda_thermal == 0 and lambda_smooth == 0"
                 )
+
+
+def _resolved_auxiliary_loss_config(
+    common_args: Mapping[str, object], experiment_args: Mapping[str, object]
+) -> Dict[str, object]:
+    arguments = dict(common_args)
+    arguments.update(experiment_args)
+    version = str(arguments.get("aux_loss_version", "legacy"))
+    filter_mode = str(arguments.get("edge_filter_mode", "gaussian"))
+    weights = {
+        name: float(arguments.get(name, 0.0))
+        for name in ("lambda_thermal", "lambda_edge", "lambda_smooth")
+    }
+    auxiliary_enabled = any(value > 0 for value in weights.values())
+    return {
+        "aux_loss_version": version,
+        "auxiliary_enabled": auxiliary_enabled,
+        "edge_filter_mode": filter_mode,
+        "filter_active": bool(
+            auxiliary_enabled
+            and version == "filtered_edge"
+            and weights["lambda_edge"] > 0
+            and filter_mode == "gaussian"
+        ),
+        "edge_filter_kernel": int(arguments.get("edge_filter_kernel", 5)),
+        "edge_filter_sigma": float(arguments.get("edge_filter_sigma", 1.0)),
+        **weights,
+    }
 
 
 def _validate_expected_hashes(value: object, label: str) -> None:
@@ -393,6 +431,7 @@ def run_experiment(
     skip_render: bool,
     allow_existing: bool,
     expected_input_hashes: Optional[Mapping[str, str]] = None,
+    auxiliary_loss_config: Optional[Mapping[str, object]] = None,
 ) -> None:
     if output_path.exists() and not allow_existing:
         raise FileExistsError(
@@ -427,6 +466,10 @@ def run_experiment(
         },
         "train_command": train_command,
         "render_command": render_command,
+        "auxiliary_loss_config": (
+            dict(auxiliary_loss_config) if auxiliary_loss_config is not None else None
+        ),
+        "phase_timings": {"train": None, "render": None},
         "log_files": {"stdout": "stdout.log", "stderr": "stderr.log"},
     }
     _write_json_atomic(run_manifest_path, record)
@@ -436,23 +479,41 @@ def run_experiment(
         ) as stderr_stream:
             if not skip_train:
                 print("[{}] train started".format(name), flush=True)
-                subprocess.run(
-                    train_command,
-                    cwd=str(REPOSITORY_ROOT),
-                    check=True,
-                    stdout=stdout_stream,
-                    stderr=stderr_stream,
-                )
+                phase_started = _utc_now()
+                phase_clock = time.perf_counter()
+                try:
+                    subprocess.run(
+                        train_command,
+                        cwd=str(REPOSITORY_ROOT),
+                        check=True,
+                        stdout=stdout_stream,
+                        stderr=stderr_stream,
+                    )
+                finally:
+                    record["phase_timings"]["train"] = {
+                        "started_at_utc": phase_started,
+                        "finished_at_utc": _utc_now(),
+                        "wall_seconds": time.perf_counter() - phase_clock,
+                    }
                 print("[{}] train completed".format(name), flush=True)
             if not skip_render:
                 print("[{}] render started".format(name), flush=True)
-                subprocess.run(
-                    render_command,
-                    cwd=str(REPOSITORY_ROOT),
-                    check=True,
-                    stdout=stdout_stream,
-                    stderr=stderr_stream,
-                )
+                phase_started = _utc_now()
+                phase_clock = time.perf_counter()
+                try:
+                    subprocess.run(
+                        render_command,
+                        cwd=str(REPOSITORY_ROOT),
+                        check=True,
+                        stdout=stdout_stream,
+                        stderr=stderr_stream,
+                    )
+                finally:
+                    record["phase_timings"]["render"] = {
+                        "started_at_utc": phase_started,
+                        "finished_at_utc": _utc_now(),
+                        "wall_seconds": time.perf_counter() - phase_clock,
+                    }
                 print("[{}] render completed".format(name), flush=True)
         record["status"] = "completed"
     except (OSError, subprocess.CalledProcessError) as exc:
@@ -507,6 +568,9 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
                     args.skip_render,
                     args.allow_existing,
                     experiment.get("expected_input_sha256"),
+                    _resolved_auxiliary_loss_config(
+                        matrix["common_args"], experiment["args"]
+                    ),
                 )
     except (MatrixError, OSError, TypeError, ValueError) as exc:
         parser.error(str(exc))

@@ -101,6 +101,11 @@ def build_parser() -> argparse.ArgumentParser:
         default="auto",
         help="metric device (default: auto)",
     )
+    parser.add_argument(
+        "--overwrite",
+        action="store_true",
+        help="replace only the four managed metric outputs if they already exist",
+    )
     return parser
 
 
@@ -122,8 +127,9 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
             skip_lpips=args.skip_lpips,
             lpips_net=args.lpips_net,
             device=device,
+            overwrite=args.overwrite,
         )
-    except (FileNotFoundError, RuntimeError, TypeError, ValueError) as exc:
+    except (OSError, RuntimeError, TypeError, ValueError) as exc:
         parser.exit(2, "error: {}\n".format(exc))
     for path in outputs.values():
         print(path)

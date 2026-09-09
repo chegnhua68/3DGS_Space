@@ -33,6 +33,9 @@ def validate_aux_loss_options(options) -> None:
     version = _option_value(options, "aux_loss_version", "legacy")
     if version not in ("legacy", "filtered_edge"):
         raise ValueError("aux_loss_version must be 'legacy' or 'filtered_edge'")
+    edge_filter_mode = _option_value(options, "edge_filter_mode", "gaussian")
+    if edge_filter_mode not in ("gaussian", "identity"):
+        raise ValueError("edge_filter_mode must be 'gaussian' or 'identity'")
 
     numeric_defaults = {
         "lambda_thermal": 0.0,
@@ -169,6 +172,7 @@ class OptimizationParams(ParamGroup):
         self.noise_beta = 5.0
         self.edge_gamma = 3.0
         self.aux_loss_version = "legacy"
+        self.edge_filter_mode = "gaussian"
         self.edge_filter_kernel = 5
         self.edge_filter_sigma = 1.0
         self.densification_interval = 100

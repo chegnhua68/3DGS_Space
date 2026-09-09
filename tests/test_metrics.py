@@ -1,11 +1,17 @@
 from __future__ import annotations
 
 import csv
+import hashlib
+import io
+import json
 import math
+import platform
+from contextlib import redirect_stderr
 from pathlib import Path
 import sys
 import tempfile
 import unittest
+from unittest import mock
 
 
 REPOSITORY_ROOT = Path(__file__).resolve().parents[1]
@@ -137,6 +143,10 @@ class MetricCollectionTests(unittest.TestCase):
             self._write_png(ground_truth / name, 32 + index)
         return method_dir
 
+    @staticmethod
+    def _sha256(path: Path) -> str:
+        return hashlib.sha256(path.read_bytes()).hexdigest()
+
     def test_pairs_are_exact_and_sorted(self):
         with tempfile.TemporaryDirectory() as temporary_dir:
             method_dir = self._make_experiment(
@@ -167,8 +177,38 @@ class MetricCollectionTests(unittest.TestCase):
                 ("ours", Path("run/ours")),
             ],
         )
+        self.assertFalse(args.overwrite)
 
-    def test_collection_writes_three_outputs_and_marks_skips_unavailable(self):
+        overwrite_args = build_parser().parse_args(
+            (
+                "--experiment",
+                "baseline=run/baseline",
+                "--skip-lpips",
+                "--overwrite",
+            )
+        )
+        self.assertTrue(overwrite_args.overwrite)
+
+    def test_cli_forwards_explicit_overwrite(self):
+        from tools import collect_metrics as collect_metrics_cli
+
+        with mock.patch.object(
+            collect_metrics_cli, "collect_metrics", return_value={}
+        ) as collector:
+            exit_code = collect_metrics_cli.main(
+                (
+                    "--experiment",
+                    "baseline=run/baseline",
+                    "--skip-lpips",
+                    "--device",
+                    "cpu",
+                    "--overwrite",
+                )
+            )
+        self.assertEqual(exit_code, 0)
+        self.assertTrue(collector.call_args.kwargs["overwrite"])
+
+    def test_collection_writes_outputs_and_verifiable_manifest(self):
         with tempfile.TemporaryDirectory() as temporary_dir:
             root = Path(temporary_dir)
             first = self._make_experiment(root / "first", ("b.png", "a.png"))
@@ -186,7 +226,8 @@ class MetricCollectionTests(unittest.TestCase):
                 device=torch.device("cpu"),
             )
             self.assertEqual(
-                set(outputs), {"summary_csv", "summary_md", "per_view_csv"}
+                set(outputs),
+                {"summary_csv", "summary_md", "per_view_csv", "manifest"},
             )
             self.assertTrue(all(path.is_file() for path in outputs.values()))
             with outputs["summary_csv"].open("r", encoding="utf-8", newline="") as source:
@@ -202,6 +243,212 @@ class MetricCollectionTests(unittest.TestCase):
             )
             markdown = outputs["summary_md"].read_text(encoding="utf-8")
             self.assertIn("no per-image min-max normalization", markdown)
+
+            manifest = json.loads(outputs["manifest"].read_text(encoding="utf-8"))
+            self.assertEqual(manifest["schema"], "thermal3dgs.metrics_manifest")
+            self.assertEqual(manifest["schema_version"], 1)
+            self.assertEqual(manifest["kind"], "metric_collection")
+            self.assertEqual(manifest["parameters"]["device"], "cpu")
+            self.assertTrue(manifest["parameters"]["skip_lpips"])
+            self.assertIn(manifest["source"]["ssim_backend"], ("official", "fallback"))
+            metrics_path = Path(manifest["source"]["metrics_py"]["path"])
+            self.assertEqual(
+                manifest["source"]["metrics_py"]["sha256"],
+                self._sha256(metrics_path),
+            )
+            ssim_source = manifest["source"]["ssim_implementation"]
+            ssim_path = Path(ssim_source["path"])
+            self.assertEqual(ssim_source["sha256"], self._sha256(ssim_path))
+            if manifest["source"]["ssim_backend"] == "official":
+                self.assertEqual(ssim_source["provider"], "source_file")
+            else:
+                self.assertEqual(ssim_source["provider"], "metrics_py")
+                self.assertEqual(ssim_path, metrics_path)
+            self.assertEqual(
+                manifest["source"]["runtime"]["python"],
+                platform.python_version(),
+            )
+            self.assertEqual(
+                manifest["source"]["runtime"]["torch"], torch.__version__
+            )
+
+            self.assertEqual(
+                [item["name"] for item in manifest["experiments"]],
+                ["a_method", "z_method"],
+            )
+            first_inventory = manifest["experiments"][0]
+            self.assertEqual(first_inventory["method_dir"], str(first.resolve()))
+            self.assertEqual(first_inventory["inventory"]["view_count"], 2)
+            self.assertEqual(first_inventory["inventory"]["count"], 6)
+            expected_names = {"a.png", "b.png"}
+            self.assertEqual(
+                set(first_inventory["renders"]["files"]), expected_names
+            )
+            self.assertEqual(set(first_inventory["gt"]["files"]), expected_names)
+            self.assertEqual(
+                set(first_inventory["roi_masks"]["files"]), expected_names
+            )
+            self.assertEqual(
+                first_inventory["renders"]["files"]["a.png"],
+                self._sha256(first / "renders" / "a.png"),
+            )
+            for output_name, record in manifest["outputs"].items():
+                self.assertEqual(
+                    record["sha256"], self._sha256(output_dir / output_name)
+                )
+                self.assertEqual(
+                    record["bytes"], (output_dir / output_name).stat().st_size
+                )
+
+    def test_collection_refuses_existing_target_before_evaluation(self):
+        with tempfile.TemporaryDirectory() as temporary_dir:
+            root = Path(temporary_dir)
+            method_dir = self._make_experiment(root / "input", ("a.png",))
+            output_dir = root / "results"
+            output_dir.mkdir()
+            existing = output_dir / "metrics_summary.csv"
+            existing.write_text("preserve me\n", encoding="utf-8")
+
+            with mock.patch.object(metrics, "evaluate_experiment") as evaluator:
+                with self.assertRaises(FileExistsError):
+                    metrics.collect_metrics(
+                        experiments=(("baseline", method_dir),),
+                        output_dir=output_dir,
+                        skip_lpips=True,
+                        device=torch.device("cpu"),
+                    )
+            evaluator.assert_not_called()
+            self.assertEqual(existing.read_text(encoding="utf-8"), "preserve me\n")
+            self.assertFalse((output_dir / "metrics_manifest.json").exists())
+
+    def test_collection_rejects_non_boolean_overwrite(self):
+        with self.assertRaisesRegex(TypeError, "overwrite must be boolean"):
+            metrics.collect_metrics((), overwrite=1)
+
+    def test_collection_rejects_inputs_changed_during_evaluation(self):
+        with tempfile.TemporaryDirectory() as temporary_dir:
+            root = Path(temporary_dir)
+            method_dir = self._make_experiment(root / "input", ("a.png",))
+            output_dir = root / "results"
+            real_evaluate = metrics.evaluate_experiment
+
+            def evaluate_then_mutate(*args, **kwargs):
+                result = real_evaluate(*args, **kwargs)
+                self._write_png(method_dir / "renders" / "a.png", 99)
+                return result
+
+            with mock.patch.object(
+                metrics, "evaluate_experiment", side_effect=evaluate_then_mutate
+            ):
+                with self.assertRaisesRegex(
+                    RuntimeError, "input files changed during evaluation"
+                ):
+                    metrics.collect_metrics(
+                        experiments=(("baseline", method_dir),),
+                        output_dir=output_dir,
+                        skip_lpips=True,
+                        device=torch.device("cpu"),
+                    )
+
+            self.assertFalse(
+                any(
+                    (output_dir / name).exists()
+                    for name in metrics.METRIC_OUTPUT_FILENAMES.values()
+                )
+            )
+
+    def test_cli_reports_output_path_os_errors_without_traceback(self):
+        from tools import collect_metrics as collect_metrics_cli
+
+        with tempfile.TemporaryDirectory() as temporary_dir:
+            output_path = Path(temporary_dir) / "not-a-directory"
+            output_path.write_text("occupied\n", encoding="utf-8")
+            stderr = io.StringIO()
+            with redirect_stderr(stderr):
+                with self.assertRaises(SystemExit) as raised:
+                    collect_metrics_cli.main(
+                        (
+                            "--experiment",
+                            "baseline=unused",
+                            "--output-dir",
+                            str(output_path),
+                            "--skip-lpips",
+                            "--device",
+                            "cpu",
+                        )
+                    )
+            self.assertEqual(raised.exception.code, 2)
+            self.assertIn("metric output path is not a directory", stderr.getvalue())
+
+    def test_explicit_overwrite_replaces_only_managed_outputs(self):
+        with tempfile.TemporaryDirectory() as temporary_dir:
+            root = Path(temporary_dir)
+            method_dir = self._make_experiment(root / "input", ("a.png",))
+            output_dir = root / "results"
+            first_outputs = metrics.collect_metrics(
+                experiments=(("baseline", method_dir),),
+                output_dir=output_dir,
+                skip_lpips=True,
+                device=torch.device("cpu"),
+            )
+            unrelated = output_dir / "keep.txt"
+            unrelated.write_text("unrelated\n", encoding="utf-8")
+            first_outputs["summary_csv"].write_text("stale\n", encoding="utf-8")
+
+            second_outputs = metrics.collect_metrics(
+                experiments=(("baseline", method_dir),),
+                output_dir=output_dir,
+                skip_lpips=True,
+                device=torch.device("cpu"),
+                overwrite=True,
+            )
+
+            self.assertEqual(unrelated.read_text(encoding="utf-8"), "unrelated\n")
+            self.assertNotEqual(
+                second_outputs["summary_csv"].read_text(encoding="utf-8"), "stale\n"
+            )
+            self.assertTrue(second_outputs["manifest"].is_file())
+            self.assertFalse(any(output_dir.glob(".metrics-stage-*")))
+
+    def test_publication_failure_restores_all_managed_outputs(self):
+        with tempfile.TemporaryDirectory() as temporary_dir:
+            root = Path(temporary_dir)
+            method_dir = self._make_experiment(root / "input", ("a.png",))
+            output_dir = root / "results"
+            outputs = metrics.collect_metrics(
+                experiments=(("baseline", method_dir),),
+                output_dir=output_dir,
+                skip_lpips=True,
+                device=torch.device("cpu"),
+            )
+            original_bytes = {key: path.read_bytes() for key, path in outputs.items()}
+            real_replace = metrics.os.replace
+            replace_count = 0
+
+            def fail_once_during_install(source, target):
+                nonlocal replace_count
+                replace_count += 1
+                if replace_count == 6:
+                    raise OSError("simulated publication failure")
+                return real_replace(source, target)
+
+            with mock.patch.object(
+                metrics.os, "replace", side_effect=fail_once_during_install
+            ):
+                with self.assertRaisesRegex(OSError, "simulated publication failure"):
+                    metrics.collect_metrics(
+                        experiments=(("baseline", method_dir),),
+                        output_dir=output_dir,
+                        skip_lpips=True,
+                        device=torch.device("cpu"),
+                        overwrite=True,
+                    )
+
+            self.assertEqual(
+                {key: path.read_bytes() for key, path in outputs.items()},
+                original_bytes,
+            )
+            self.assertFalse(any(output_dir.glob(".metrics-stage-*")))
 
 
 if __name__ == "__main__":
