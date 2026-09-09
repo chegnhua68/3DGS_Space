@@ -1,0 +1,4 @@
+experiment,num_views,psnr,ssim,lpips,t_mae,e_mae,gradient_preservation,roi_mae
+B0,34,30.39051661,0.94341818,unavailable,0.02791338,0.00642283,0.53745191,unavailable
+E2,34,31.00450084,0.94794881,unavailable,0.02396479,0.00642512,0.52745980,unavailable
+E2_no_filter,34,30.19295875,0.94501015,unavailable,0.02773011,0.00646913,0.52384254,unavailable

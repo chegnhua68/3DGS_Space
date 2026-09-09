@@ -199,6 +199,11 @@ Identity 仍显式保留 `edge_filter_kernel=5` 和 `edge_filter_sigma=1.0`，�
 都会记录模式和有效状态。完整冻结协议、固定定性视角及计时边界见
 [滤波单因素消融协议](docs/edge_filter_ablation_protocol.md)。
 
+本轮三组 7k 已在冻结提交 `86b9b78` 上完成。E2 相对 E2_no_filter 在 7k 的五项均值指标
+全部改善；相对 B0 则改善 PSNR、SSIM 和 T-MAE，但 E-MAE 与 Gradient preservation 未改善。
+完整数值、资源开销、固定定性图和限制见
+[Step 2 消融报告](results/edge_filter_ablation_7k/ablation_report.md)。30k 尚未运行。
+
 Step 2 三组训练启动后，可用已安装的 TensorBoard 实时查看：
 
 ```powershell

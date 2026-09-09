@@ -2,7 +2,9 @@
 
 > 冻结日期：2026-09-09<br>
 > 起点提交：`6af9f0d21b7c5580cc4e1baa794c5261fd8c007d`<br>
-> 当前阶段：Step 2 实现与运行；30k 配置只准备和 dry-run，不执行。
+> 7k 执行提交：`86b9b78b6b464795a41c3baa98c4219bb359c12f`<br>
+> 当前阶段：Step 2 三组 7k 与 2k/7k val 分析已完成；30k 配置只准备和 dry-run，不执行。<br>
+> 结果报告：[`results/edge_filter_ablation_7k/ablation_report.md`](../results/edge_filter_ablation_7k/ablation_report.md)
 
 ## 1. 问题与边界
 

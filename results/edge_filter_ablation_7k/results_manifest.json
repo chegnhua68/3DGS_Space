@@ -1,0 +1,742 @@
+{
+  "checkpoints": [
+    2000,
+    7000
+  ],
+  "comparisons": [
+    {
+      "lhs": "E2",
+      "name": "E2_minus_E2_no_filter",
+      "rhs": "E2_no_filter"
+    },
+    {
+      "lhs": "E2",
+      "name": "E2_minus_B0",
+      "rhs": "B0"
+    },
+    {
+      "lhs": "E2_no_filter",
+      "name": "E2_no_filter_minus_B0",
+      "rhs": "B0"
+    }
+  ],
+  "figure_protocol": {
+    "absolute_error": {
+      "cmap": "magma",
+      "vmax": 0.25,
+      "vmin": 0.0
+    },
+    "crop_rule": "center one third, half-open [floor(W/3), floor(H/3), ceil(2W/3), ceil(2H/3)]",
+    "crop_xyxy": {
+      "00000.png": [
+        238,
+        159,
+        477,
+        320
+      ],
+      "00011.png": [
+        238,
+        159,
+        477,
+        320
+      ],
+      "00022.png": [
+        238,
+        159,
+        477,
+        320
+      ],
+      "00033.png": [
+        238,
+        159,
+        477,
+        320
+      ]
+    },
+    "display_range": [
+      0.0,
+      1.0
+    ],
+    "dpi": 200,
+    "filenames": [
+      "00000.png",
+      "00011.png",
+      "00022.png",
+      "00033.png"
+    ],
+    "iteration": 7000,
+    "normalization": "fixed encoded range; no per-image min-max",
+    "selection_rule": "sort 34 validation views by frozen sequence order and select floor(k*(N-1)/3) for k=0,1,2,3",
+    "val_view_ids": {
+      "00000.png": "001.jpg",
+      "00011.png": "101.jpg",
+      "00022.png": "202.jpg",
+      "00033.png": "302.jpg"
+    }
+  },
+  "generator_version": "1",
+  "ground_truth_sha256": {
+    "00000.png": "e75253be35724cd853b91cf93d026bbfb8ac654a6fe9b7ed87d4a7ab789ff33d",
+    "00001.png": "1be8926579d2a1e61db1fa49852d06701def06d1100bc82817f17e8eb21cab2a",
+    "00002.png": "caae46ae3f086fe0c3861402457b95a2a428059ef9cfcd8ac27c71e471e431aa",
+    "00003.png": "d2880ad3fa39d4b74cca40aeb9e541e7b0ecdd5e2e6a7dc223f671f98f1bef3c",
+    "00004.png": "10f31430cf179a3fe57d7637959f07b8d5bc27db6592ddd685e9b1e239980552",
+    "00005.png": "baf8d2fbcd658ebecb1aa81290de076425a4412dd5d2f92907283891e98cdebe",
+    "00006.png": "e64ddd0162397035acab74c718fa1c30e3550ce85b8157a4dfd5f9589be079bf",
+    "00007.png": "1d96cbdac097f30cd297178a6969dc1ce2ea1f5f09636b39a28551ceefb066e4",
+    "00008.png": "3effa960a498537da2070fa59eeb718671d3384c01871bda45755013bded995a",
+    "00009.png": "ade535ad313e1997d975b8e44b0acf6020df9b63e98a164b0daaacafac7eaa50",
+    "00010.png": "08704d9c33bfca64b450c8e23bd28e55b39881b9b9a31ad2bf0af6660ddd8f00",
+    "00011.png": "05e0076cff4f30259c65f7a8140510c50c144915f410f8089bd908d8e930d3fd",
+    "00012.png": "a94ad020941773bfc35b6cddf220ec1214d8f33c57fc5abca0e98938602601e2",
+    "00013.png": "f2df8a5529b86700df189849187a1ff8ce9fb334c91f0f564f6a13961214c24a",
+    "00014.png": "d1332da5e1850eed028a60830e3bf6a52bda92524e5c23ee6bd935f9b5cd3362",
+    "00015.png": "81e1094c211a0f0944695b3bb8ab2e13305e3172d237aaa135b43743940df778",
+    "00016.png": "69d2a8f584326ccc9f17cb7471261d26a5568b1eb92984304979dc2c63b5a14a",
+    "00017.png": "528fff5041d6a775a4a7e4a1af193a0fec1288ef2393808e5b293627717d78ad",
+    "00018.png": "552003617c8d0e34e83bd1d9c404851e4d45ca28c7fb730b77fbbfa52c54d512",
+    "00019.png": "24524bcd18ee7a4a3cada3078ddcc15a1b21b60b243ad3a19ee003066c4f12d5",
+    "00020.png": "80874494d895e06f354ae9f3642b3e00b65130708c95587a90bc6420402e8341",
+    "00021.png": "33ed39267092613103105b4b04a435b486e21cddeb6ac076bb0ecce5c65dcf34",
+    "00022.png": "8e560859815979140e9d64fc42785517971268454b8bf977c2514d6e91972ab1",
+    "00023.png": "a6e03d3d4c329b057a0c885ab3e2a87554906feb561045e4ec8ec3376b87344c",
+    "00024.png": "d8c72a2dba96450c34f3287d178670ec547b4b10630ca874c101fabc18304985",
+    "00025.png": "bbd5b50395a1f37c58c244be03d4cfa62cae5d387822afc82ffc7486a6e29463",
+    "00026.png": "8f0e3d82751a5257abd7a013b2c2dba4cbfd99acdc471aa20805975faa3f40c4",
+    "00027.png": "b2da8333e5d149f820cd648e4aceeb725cca650bdd79f100e6172e36eb00ffb6",
+    "00028.png": "93c09ce3050e49bfe9dbaae5ab66bcfb15ada81df16bcabf886f78e9a1de741e",
+    "00029.png": "0b532dc40d3a72b8c01007e356b82a18f9b97f34f377d8a48d9947694d62dbd5",
+    "00030.png": "ad2132599ecf7e0ff95a13fb30612340a332bf47c39e9c8ec105f84991059681",
+    "00031.png": "0a1d44e219f31d9f4736f29f01c5dfc41f330c5e0575adb096ee1c151691a67e",
+    "00032.png": "ef6caa2eb353b865dcd3f814a2176d2cc92533f0a451ac9e942935702eb81e90",
+    "00033.png": "59d499b97b746c741073765acb38de6caa0385c4a27b08ce84472eb051b441bd"
+  },
+  "inputs": [
+    {
+      "bytes": 79763,
+      "kind": "analysis-source",
+      "path": "E:/1_Work/Graduate/Work/Thermal3DGS_sparse/src/thermal3dgs_sparse_ir/edge_filter_ablation.py",
+      "sha256": "c550d56edfb2dd407904babe5ceba7ae274148cb5ca21b23c35a05f5672f9154"
+    },
+    {
+      "bytes": 36957,
+      "kind": "camera-map",
+      "method": "B0",
+      "path": "E:/1_Work/Graduate/Work/Thermal3DGS_sparse/runs/edge_filter_ablation_7k/B0_trainseed2026/cameras.json",
+      "sha256": "76e54dd6cb975e6ff6d6064cab7350e01f4b2f04eb1b0f5e2f43a466408f8004"
+    },
+    {
+      "bytes": 36957,
+      "kind": "camera-map",
+      "method": "E2",
+      "path": "E:/1_Work/Graduate/Work/Thermal3DGS_sparse/runs/edge_filter_ablation_7k/E2_trainseed2026/cameras.json",
+      "sha256": "76e54dd6cb975e6ff6d6064cab7350e01f4b2f04eb1b0f5e2f43a466408f8004"
+    },
+    {
+      "bytes": 36957,
+      "kind": "camera-map",
+      "method": "E2_no_filter",
+      "path": "E:/1_Work/Graduate/Work/Thermal3DGS_sparse/runs/edge_filter_ablation_7k/E2_no_filter_trainseed2026/cameras.json",
+      "sha256": "76e54dd6cb975e6ff6d6064cab7350e01f4b2f04eb1b0f5e2f43a466408f8004"
+    },
+    {
+      "file_count": 34,
+      "iteration": 2000,
+      "kind": "ground-truth-image-inventory",
+      "method": "B0",
+      "path": "E:/1_Work/Graduate/Work/Thermal3DGS_sparse/runs/edge_filter_ablation_7k/B0_trainseed2026/val/ours_2000/gt",
+      "sha256": "aefbc7c56c3880c6f01156f3b545eed019b9cf84017953ec1b844d10001d145c"
+    },
+    {
+      "file_count": 34,
+      "iteration": 7000,
+      "kind": "ground-truth-image-inventory",
+      "method": "B0",
+      "path": "E:/1_Work/Graduate/Work/Thermal3DGS_sparse/runs/edge_filter_ablation_7k/B0_trainseed2026/val/ours_7000/gt",
+      "sha256": "aefbc7c56c3880c6f01156f3b545eed019b9cf84017953ec1b844d10001d145c"
+    },
+    {
+      "file_count": 34,
+      "iteration": 2000,
+      "kind": "ground-truth-image-inventory",
+      "method": "E2",
+      "path": "E:/1_Work/Graduate/Work/Thermal3DGS_sparse/runs/edge_filter_ablation_7k/E2_trainseed2026/val/ours_2000/gt",
+      "sha256": "aefbc7c56c3880c6f01156f3b545eed019b9cf84017953ec1b844d10001d145c"
+    },
+    {
+      "file_count": 34,
+      "iteration": 7000,
+      "kind": "ground-truth-image-inventory",
+      "method": "E2",
+      "path": "E:/1_Work/Graduate/Work/Thermal3DGS_sparse/runs/edge_filter_ablation_7k/E2_trainseed2026/val/ours_7000/gt",
+      "sha256": "aefbc7c56c3880c6f01156f3b545eed019b9cf84017953ec1b844d10001d145c"
+    },
+    {
+      "file_count": 34,
+      "iteration": 2000,
+      "kind": "ground-truth-image-inventory",
+      "method": "E2_no_filter",
+      "path": "E:/1_Work/Graduate/Work/Thermal3DGS_sparse/runs/edge_filter_ablation_7k/E2_no_filter_trainseed2026/val/ours_2000/gt",
+      "sha256": "aefbc7c56c3880c6f01156f3b545eed019b9cf84017953ec1b844d10001d145c"
+    },
+    {
+      "file_count": 34,
+      "iteration": 7000,
+      "kind": "ground-truth-image-inventory",
+      "method": "E2_no_filter",
+      "path": "E:/1_Work/Graduate/Work/Thermal3DGS_sparse/runs/edge_filter_ablation_7k/E2_no_filter_trainseed2026/val/ours_7000/gt",
+      "sha256": "aefbc7c56c3880c6f01156f3b545eed019b9cf84017953ec1b844d10001d145c"
+    },
+    {
+      "bytes": 2737,
+      "kind": "loss-components",
+      "method": "B0",
+      "path": "E:/1_Work/Graduate/Work/Thermal3DGS_sparse/runs/edge_filter_ablation_7k/B0_trainseed2026/loss_components.csv",
+      "sha256": "4e03e65fead5396269d6996c92e719bdf3e95914985b8ce3d5adf6d74abf22f9"
+    },
+    {
+      "bytes": 3131,
+      "kind": "loss-components",
+      "method": "E2",
+      "path": "E:/1_Work/Graduate/Work/Thermal3DGS_sparse/runs/edge_filter_ablation_7k/E2_trainseed2026/loss_components.csv",
+      "sha256": "70d5a84e874b39543e534f1be1d254d9671e595ddfec85506344e5cac2e74f13"
+    },
+    {
+      "bytes": 3301,
+      "kind": "loss-components",
+      "method": "E2_no_filter",
+      "path": "E:/1_Work/Graduate/Work/Thermal3DGS_sparse/runs/edge_filter_ablation_7k/E2_no_filter_trainseed2026/loss_components.csv",
+      "sha256": "a6eda6f17a55cfed2de1b1bc1596b767052bfde0f2021fb216c20a7542d1fccf"
+    },
+    {
+      "bytes": 4464,
+      "kind": "metrics-cli-source",
+      "path": "E:/1_Work/Graduate/Work/Thermal3DGS_sparse/tools/collect_metrics.py",
+      "sha256": "08fc76e3f7997f9568b63906c85ce4b4cac2098482e5c4a21c3aa0246c8d9dca"
+    },
+    {
+      "bytes": 22313,
+      "iteration": 2000,
+      "kind": "metrics-manifest",
+      "path": "E:/1_Work/Graduate/Work/Thermal3DGS_sparse/results/edge_filter_ablation_7k/val_2000/metrics_manifest.json",
+      "sha256": "4ca6f48ce83f20a0a1b3b24932c615a1133fa837ab8e0945c5e371bf7fff7c7f"
+    },
+    {
+      "bytes": 22313,
+      "iteration": 7000,
+      "kind": "metrics-manifest",
+      "path": "E:/1_Work/Graduate/Work/Thermal3DGS_sparse/results/edge_filter_ablation_7k/val_7000/metrics_manifest.json",
+      "sha256": "67bbe78eecfeb1af6ac2d07f9ae0b75f31d7f7c6a8884db1e4765860f0449b60"
+    },
+    {
+      "bytes": 10004,
+      "iteration": 2000,
+      "kind": "metrics-per-view",
+      "path": "E:/1_Work/Graduate/Work/Thermal3DGS_sparse/results/edge_filter_ablation_7k/val_2000/metrics_per_view.csv",
+      "sha256": "6809c68bbc8e33e1aef27713fdfc6f889ea29c50c9fd8a59cde00c640c5d744b"
+    },
+    {
+      "bytes": 10004,
+      "iteration": 7000,
+      "kind": "metrics-per-view",
+      "path": "E:/1_Work/Graduate/Work/Thermal3DGS_sparse/results/edge_filter_ablation_7k/val_7000/metrics_per_view.csv",
+      "sha256": "ff5e70b418b3069e81c34d3f1b605ef0ac18923755a4388e64d48d8f8158b34a"
+    },
+    {
+      "bytes": 31757,
+      "kind": "metrics-source",
+      "path": "E:/1_Work/Graduate/Work/Thermal3DGS_sparse/src/thermal3dgs_sparse_ir/metrics.py",
+      "sha256": "a3b214986ddcb77645a71246733b52975b14253accb8f575430dffe7e5f72c40",
+      "ssim_backend": "fallback"
+    },
+    {
+      "bytes": 351,
+      "iteration": 2000,
+      "kind": "metrics-summary",
+      "path": "E:/1_Work/Graduate/Work/Thermal3DGS_sparse/results/edge_filter_ablation_7k/val_2000/metrics_summary.csv",
+      "sha256": "840b8734dba4710510f7e3ea0dc78e751260126846c5f8250b026b12f4b4293d"
+    },
+    {
+      "bytes": 351,
+      "iteration": 7000,
+      "kind": "metrics-summary",
+      "path": "E:/1_Work/Graduate/Work/Thermal3DGS_sparse/results/edge_filter_ablation_7k/val_7000/metrics_summary.csv",
+      "sha256": "f3c3a37d1bbbbd2663f836d0dc53c820262f6a8fe5a185fe74cc9a60ca9c7032"
+    },
+    {
+      "bytes": 857,
+      "iteration": 2000,
+      "kind": "metrics-summary-markdown",
+      "path": "E:/1_Work/Graduate/Work/Thermal3DGS_sparse/results/edge_filter_ablation_7k/val_2000/metrics_summary.md",
+      "sha256": "634982dfbce4dfb96399ddddaba25dfcdfb935000993f740ad44d866afac7c20"
+    },
+    {
+      "bytes": 857,
+      "iteration": 7000,
+      "kind": "metrics-summary-markdown",
+      "path": "E:/1_Work/Graduate/Work/Thermal3DGS_sparse/results/edge_filter_ablation_7k/val_7000/metrics_summary.md",
+      "sha256": "8cc4dcd7f4190c3adfb50071d3f68087e864e96a3d7b7568539d240cdfc80a41"
+    },
+    {
+      "bytes": 2024108,
+      "iteration": 2000,
+      "kind": "model-file",
+      "method": "B0",
+      "path": "E:/1_Work/Graduate/Work/Thermal3DGS_sparse/runs/edge_filter_ablation_7k/B0_trainseed2026/ATF/iteration_2000/ATF.pth",
+      "role": "atf",
+      "sha256": "075079521c2c4609ce4d8e8c945fd3f9f717e4ce234f02aa0854873d4edb6fc5"
+    },
+    {
+      "bytes": 2592,
+      "iteration": 2000,
+      "kind": "model-file",
+      "method": "B0",
+      "path": "E:/1_Work/Graduate/Work/Thermal3DGS_sparse/runs/edge_filter_ablation_7k/B0_trainseed2026/TCM/iteration_2000/TCM.pth",
+      "role": "tcm",
+      "sha256": "0757cf7aa9465da44794a55415b1f5ccfcf6dffc7d15d202fe5eabf8b0c5ac16"
+    },
+    {
+      "bytes": 3643906,
+      "iteration": 2000,
+      "kind": "model-file",
+      "method": "B0",
+      "path": "E:/1_Work/Graduate/Work/Thermal3DGS_sparse/runs/edge_filter_ablation_7k/B0_trainseed2026/point_cloud/iteration_2000/point_cloud.ply",
+      "role": "point_cloud",
+      "sha256": "e47ed26fc57abe635dc3f5e7e19af31616c6c80903756c5670348748968f6bc7"
+    },
+    {
+      "bytes": 2024108,
+      "iteration": 7000,
+      "kind": "model-file",
+      "method": "B0",
+      "path": "E:/1_Work/Graduate/Work/Thermal3DGS_sparse/runs/edge_filter_ablation_7k/B0_trainseed2026/ATF/iteration_7000/ATF.pth",
+      "role": "atf",
+      "sha256": "557292ee9632ae9e3b2fa1760f0250b7af66070b2909f1aafd00cda68694da4c"
+    },
+    {
+      "bytes": 2592,
+      "iteration": 7000,
+      "kind": "model-file",
+      "method": "B0",
+      "path": "E:/1_Work/Graduate/Work/Thermal3DGS_sparse/runs/edge_filter_ablation_7k/B0_trainseed2026/TCM/iteration_7000/TCM.pth",
+      "role": "tcm",
+      "sha256": "b4d5402acf00c2932fd1bdc74fafc93442b42dd81b53fbf54fdbeedef53dd75d"
+    },
+    {
+      "bytes": 6548978,
+      "iteration": 7000,
+      "kind": "model-file",
+      "method": "B0",
+      "path": "E:/1_Work/Graduate/Work/Thermal3DGS_sparse/runs/edge_filter_ablation_7k/B0_trainseed2026/point_cloud/iteration_7000/point_cloud.ply",
+      "role": "point_cloud",
+      "sha256": "4eaa0352964c4fc12538fefca8cb3d7255483f3cb1dc6372bfea537f0f307e6a"
+    },
+    {
+      "bytes": 2024108,
+      "iteration": 2000,
+      "kind": "model-file",
+      "method": "E2",
+      "path": "E:/1_Work/Graduate/Work/Thermal3DGS_sparse/runs/edge_filter_ablation_7k/E2_trainseed2026/ATF/iteration_2000/ATF.pth",
+      "role": "atf",
+      "sha256": "c7a00cf22e955c4487d18668a565bff77250fd7d144bba418e584baeae145070"
+    },
+    {
+      "bytes": 2592,
+      "iteration": 2000,
+      "kind": "model-file",
+      "method": "E2",
+      "path": "E:/1_Work/Graduate/Work/Thermal3DGS_sparse/runs/edge_filter_ablation_7k/E2_trainseed2026/TCM/iteration_2000/TCM.pth",
+      "role": "tcm",
+      "sha256": "bff0ae94604434f2ea65ca9906eca15da969d1be890ba801bade3dbbaa611fb5"
+    },
+    {
+      "bytes": 3710370,
+      "iteration": 2000,
+      "kind": "model-file",
+      "method": "E2",
+      "path": "E:/1_Work/Graduate/Work/Thermal3DGS_sparse/runs/edge_filter_ablation_7k/E2_trainseed2026/point_cloud/iteration_2000/point_cloud.ply",
+      "role": "point_cloud",
+      "sha256": "82986124ff89a8281debc1d6a2f4e2223704edada73ee80428c2482e64c52344"
+    },
+    {
+      "bytes": 2024108,
+      "iteration": 7000,
+      "kind": "model-file",
+      "method": "E2",
+      "path": "E:/1_Work/Graduate/Work/Thermal3DGS_sparse/runs/edge_filter_ablation_7k/E2_trainseed2026/ATF/iteration_7000/ATF.pth",
+      "role": "atf",
+      "sha256": "c8d2378a2f300f609ac43fbe45993009449dedd69a990104ba062ea4ac74c395"
+    },
+    {
+      "bytes": 2592,
+      "iteration": 7000,
+      "kind": "model-file",
+      "method": "E2",
+      "path": "E:/1_Work/Graduate/Work/Thermal3DGS_sparse/runs/edge_filter_ablation_7k/E2_trainseed2026/TCM/iteration_7000/TCM.pth",
+      "role": "tcm",
+      "sha256": "ce3d0748d1e05dde9cb45702da0758f329ce038c9ca85fe235fd2734dc86bc34"
+    },
+    {
+      "bytes": 6543274,
+      "iteration": 7000,
+      "kind": "model-file",
+      "method": "E2",
+      "path": "E:/1_Work/Graduate/Work/Thermal3DGS_sparse/runs/edge_filter_ablation_7k/E2_trainseed2026/point_cloud/iteration_7000/point_cloud.ply",
+      "role": "point_cloud",
+      "sha256": "79f346fe48c842a6ac3f00224e6f206f54c641b2bfb197b893c05ae483ffa405"
+    },
+    {
+      "bytes": 2024108,
+      "iteration": 2000,
+      "kind": "model-file",
+      "method": "E2_no_filter",
+      "path": "E:/1_Work/Graduate/Work/Thermal3DGS_sparse/runs/edge_filter_ablation_7k/E2_no_filter_trainseed2026/ATF/iteration_2000/ATF.pth",
+      "role": "atf",
+      "sha256": "f999fbdf0f1d1bb460e769ebefe2610fc96046e581daa518bee2d845b49cec58"
+    },
+    {
+      "bytes": 2592,
+      "iteration": 2000,
+      "kind": "model-file",
+      "method": "E2_no_filter",
+      "path": "E:/1_Work/Graduate/Work/Thermal3DGS_sparse/runs/edge_filter_ablation_7k/E2_no_filter_trainseed2026/TCM/iteration_2000/TCM.pth",
+      "role": "tcm",
+      "sha256": "f6681ebd320a82b5986c60bb48f3f2fe76b86f2c1a8af30bc484ffd7faf4cc97"
+    },
+    {
+      "bytes": 3761706,
+      "iteration": 2000,
+      "kind": "model-file",
+      "method": "E2_no_filter",
+      "path": "E:/1_Work/Graduate/Work/Thermal3DGS_sparse/runs/edge_filter_ablation_7k/E2_no_filter_trainseed2026/point_cloud/iteration_2000/point_cloud.ply",
+      "role": "point_cloud",
+      "sha256": "6e5cb060b623b80f35f0969b3b2bef79dd9ef59c2c04d1039cc06fdb3ca475fa"
+    },
+    {
+      "bytes": 2024108,
+      "iteration": 7000,
+      "kind": "model-file",
+      "method": "E2_no_filter",
+      "path": "E:/1_Work/Graduate/Work/Thermal3DGS_sparse/runs/edge_filter_ablation_7k/E2_no_filter_trainseed2026/ATF/iteration_7000/ATF.pth",
+      "role": "atf",
+      "sha256": "05aab18cf99b4b887c30d5b0bb2f51eef0a7b1beeae3bcab87979c117d0bf967"
+    },
+    {
+      "bytes": 2592,
+      "iteration": 7000,
+      "kind": "model-file",
+      "method": "E2_no_filter",
+      "path": "E:/1_Work/Graduate/Work/Thermal3DGS_sparse/runs/edge_filter_ablation_7k/E2_no_filter_trainseed2026/TCM/iteration_7000/TCM.pth",
+      "role": "tcm",
+      "sha256": "b47b480f53bad3078c5793c391e29dc04c2a06a583ca4a5fc5d0a36a11369798"
+    },
+    {
+      "bytes": 6373890,
+      "iteration": 7000,
+      "kind": "model-file",
+      "method": "E2_no_filter",
+      "path": "E:/1_Work/Graduate/Work/Thermal3DGS_sparse/runs/edge_filter_ablation_7k/E2_no_filter_trainseed2026/point_cloud/iteration_7000/point_cloud.ply",
+      "role": "point_cloud",
+      "sha256": "374f4911012cec863a5c9db72ed8b91e908c8eae581f203b7f7464ec401ccf77"
+    },
+    {
+      "file_count": 34,
+      "iteration": 2000,
+      "kind": "render-image-inventory",
+      "method": "B0",
+      "path": "E:/1_Work/Graduate/Work/Thermal3DGS_sparse/runs/edge_filter_ablation_7k/B0_trainseed2026/val/ours_2000/renders",
+      "sha256": "51499527ca239d8ce0f703c8c5d0b53f3431c37fd2fe2e4be6a918d1163ba23e"
+    },
+    {
+      "file_count": 34,
+      "iteration": 7000,
+      "kind": "render-image-inventory",
+      "method": "B0",
+      "path": "E:/1_Work/Graduate/Work/Thermal3DGS_sparse/runs/edge_filter_ablation_7k/B0_trainseed2026/val/ours_7000/renders",
+      "sha256": "84141785d4cf8ec3a82b0c36613742da9250709d1ea859002eefe3049622a2d5"
+    },
+    {
+      "file_count": 34,
+      "iteration": 2000,
+      "kind": "render-image-inventory",
+      "method": "E2",
+      "path": "E:/1_Work/Graduate/Work/Thermal3DGS_sparse/runs/edge_filter_ablation_7k/E2_trainseed2026/val/ours_2000/renders",
+      "sha256": "86fe1442de8e186a3fa610c3d74849acb1e7aa9613077937a076fae0978f588c"
+    },
+    {
+      "file_count": 34,
+      "iteration": 7000,
+      "kind": "render-image-inventory",
+      "method": "E2",
+      "path": "E:/1_Work/Graduate/Work/Thermal3DGS_sparse/runs/edge_filter_ablation_7k/E2_trainseed2026/val/ours_7000/renders",
+      "sha256": "e813b25d57ada8329a27943d7f1b2925803a042835ef876914651c0fd1d16501"
+    },
+    {
+      "file_count": 34,
+      "iteration": 2000,
+      "kind": "render-image-inventory",
+      "method": "E2_no_filter",
+      "path": "E:/1_Work/Graduate/Work/Thermal3DGS_sparse/runs/edge_filter_ablation_7k/E2_no_filter_trainseed2026/val/ours_2000/renders",
+      "sha256": "d04614e8d0145355adc5a50c5631a97b889882cd066ebcc8505a1258ffb366b7"
+    },
+    {
+      "file_count": 34,
+      "iteration": 7000,
+      "kind": "render-image-inventory",
+      "method": "E2_no_filter",
+      "path": "E:/1_Work/Graduate/Work/Thermal3DGS_sparse/runs/edge_filter_ablation_7k/E2_no_filter_trainseed2026/val/ours_7000/renders",
+      "sha256": "9e7c69dcaf399a7853cd34c4b280084733c25335ca9e940e1592eab89f3ee81c"
+    },
+    {
+      "bytes": 437,
+      "iteration": 2000,
+      "kind": "render-timing-json",
+      "method": "B0",
+      "path": "E:/1_Work/Graduate/Work/Thermal3DGS_sparse/runs/edge_filter_ablation_7k/B0_trainseed2026/val/ours_2000/render_timing.json",
+      "sha256": "e9601f1b41cb0853f2546c4ff3952a040542e11b90b49a4540861c6998524f67"
+    },
+    {
+      "bytes": 435,
+      "iteration": 7000,
+      "kind": "render-timing-json",
+      "method": "B0",
+      "path": "E:/1_Work/Graduate/Work/Thermal3DGS_sparse/runs/edge_filter_ablation_7k/B0_trainseed2026/val/ours_7000/render_timing.json",
+      "sha256": "45e0c05df89b80ed05890268f8b999ce180f0db090fff545bfabc9a69195a843"
+    },
+    {
+      "bytes": 436,
+      "iteration": 2000,
+      "kind": "render-timing-json",
+      "method": "E2",
+      "path": "E:/1_Work/Graduate/Work/Thermal3DGS_sparse/runs/edge_filter_ablation_7k/E2_trainseed2026/val/ours_2000/render_timing.json",
+      "sha256": "ed79b6c4281efe49db0a82809d0365009937df691ff777d0d57ddaabe6af8ea7"
+    },
+    {
+      "bytes": 437,
+      "iteration": 7000,
+      "kind": "render-timing-json",
+      "method": "E2",
+      "path": "E:/1_Work/Graduate/Work/Thermal3DGS_sparse/runs/edge_filter_ablation_7k/E2_trainseed2026/val/ours_7000/render_timing.json",
+      "sha256": "50cdf7ab310796673c41709d050d72ea97756043fc74d13a06433f214c1ccafe"
+    },
+    {
+      "bytes": 438,
+      "iteration": 2000,
+      "kind": "render-timing-json",
+      "method": "E2_no_filter",
+      "path": "E:/1_Work/Graduate/Work/Thermal3DGS_sparse/runs/edge_filter_ablation_7k/E2_no_filter_trainseed2026/val/ours_2000/render_timing.json",
+      "sha256": "788819563a604ef7214e10bad7d6fde102864dc3387d212236b335e5643f038d"
+    },
+    {
+      "bytes": 436,
+      "iteration": 7000,
+      "kind": "render-timing-json",
+      "method": "E2_no_filter",
+      "path": "E:/1_Work/Graduate/Work/Thermal3DGS_sparse/runs/edge_filter_ablation_7k/E2_no_filter_trainseed2026/val/ours_7000/render_timing.json",
+      "sha256": "c9f88f8d34eecd964df3bff00baf7e4fcbb8b51f93b7e3908e837cf11ffb0e9e"
+    },
+    {
+      "bytes": 292,
+      "iteration": 2000,
+      "kind": "render-timing-text",
+      "method": "B0",
+      "path": "E:/1_Work/Graduate/Work/Thermal3DGS_sparse/runs/edge_filter_ablation_7k/B0_trainseed2026/val/ours_2000/render_time.txt",
+      "sha256": "ae227bb1356bd2b8dd41f47dce3bdd8a6379117e12f21102870b47c36cf5e613"
+    },
+    {
+      "bytes": 292,
+      "iteration": 7000,
+      "kind": "render-timing-text",
+      "method": "B0",
+      "path": "E:/1_Work/Graduate/Work/Thermal3DGS_sparse/runs/edge_filter_ablation_7k/B0_trainseed2026/val/ours_7000/render_time.txt",
+      "sha256": "b78badf4e819ac8429412fe79ef8cb23ccde69811ac653e3c2d4a3f552d0ec04"
+    },
+    {
+      "bytes": 292,
+      "iteration": 2000,
+      "kind": "render-timing-text",
+      "method": "E2",
+      "path": "E:/1_Work/Graduate/Work/Thermal3DGS_sparse/runs/edge_filter_ablation_7k/E2_trainseed2026/val/ours_2000/render_time.txt",
+      "sha256": "98e5acbf0b987ec981445a58150eae2bc0d2013a0cf772af6d1a9b2a225bb258"
+    },
+    {
+      "bytes": 292,
+      "iteration": 7000,
+      "kind": "render-timing-text",
+      "method": "E2",
+      "path": "E:/1_Work/Graduate/Work/Thermal3DGS_sparse/runs/edge_filter_ablation_7k/E2_trainseed2026/val/ours_7000/render_time.txt",
+      "sha256": "71adf7246b896e3c2427f190a8b67337b64d10e41125fef54059af6d8c591ddd"
+    },
+    {
+      "bytes": 292,
+      "iteration": 2000,
+      "kind": "render-timing-text",
+      "method": "E2_no_filter",
+      "path": "E:/1_Work/Graduate/Work/Thermal3DGS_sparse/runs/edge_filter_ablation_7k/E2_no_filter_trainseed2026/val/ours_2000/render_time.txt",
+      "sha256": "8be98d4d055cf168c91ce543dcaeba1b55eb86f1db31a39646e492785ec69e0a"
+    },
+    {
+      "bytes": 292,
+      "iteration": 7000,
+      "kind": "render-timing-text",
+      "method": "E2_no_filter",
+      "path": "E:/1_Work/Graduate/Work/Thermal3DGS_sparse/runs/edge_filter_ablation_7k/E2_no_filter_trainseed2026/val/ours_7000/render_time.txt",
+      "sha256": "e4c42b69f61618ccb442ffaf664500085debd81d096e474dff6bb6c3f526e9b6"
+    },
+    {
+      "bytes": 3793,
+      "kind": "run-manifest",
+      "method": "B0",
+      "path": "E:/1_Work/Graduate/Work/Thermal3DGS_sparse/runs/edge_filter_ablation_7k/B0_trainseed2026/run_manifest.json",
+      "sha256": "f04bc2f89370c31e702884607cf3e0e2aef02120bd999dd7edc2ef816057a0e2"
+    },
+    {
+      "bytes": 3806,
+      "kind": "run-manifest",
+      "method": "E2",
+      "path": "E:/1_Work/Graduate/Work/Thermal3DGS_sparse/runs/edge_filter_ablation_7k/E2_trainseed2026/run_manifest.json",
+      "sha256": "096fac3f54b430a6751a2ee37cdd178d0e0c1814f743db461d950b54fcd7d0e5"
+    },
+    {
+      "bytes": 3840,
+      "kind": "run-manifest",
+      "method": "E2_no_filter",
+      "path": "E:/1_Work/Graduate/Work/Thermal3DGS_sparse/runs/edge_filter_ablation_7k/E2_no_filter_trainseed2026/run_manifest.json",
+      "sha256": "65e86bf070bf3e4ef42bfe10fbaca01dc8bdf3d9f901b1345de010ed8ebf31bd"
+    }
+  ],
+  "kind": "edge-filter-ablation-results",
+  "methods": [
+    "B0",
+    "E2_no_filter",
+    "E2"
+  ],
+  "metric_contract": {
+    "collect_metrics_source_sha256": "08fc76e3f7997f9568b63906c85ce4b4cac2098482e5c4a21c3aa0246c8d9dca",
+    "delta": "lhs_minus_rhs",
+    "higher_is_better": [
+      "gradient_preservation",
+      "psnr",
+      "ssim"
+    ],
+    "lower_is_better": [
+      "t_mae",
+      "e_mae"
+    ],
+    "lpips": "unavailable",
+    "metrics": [
+      "psnr",
+      "ssim",
+      "t_mae",
+      "e_mae",
+      "gradient_preservation"
+    ],
+    "metrics_source_sha256": "a3b214986ddcb77645a71246733b52975b14253accb8f575430dffe7e5f72c40",
+    "roi_mae": "unavailable",
+    "runtime": {
+      "python": "3.11.9",
+      "torch": "2.5.1+cu121"
+    },
+    "ssim_backend": "fallback",
+    "ssim_implementation": {
+      "path": "E:\\1_Work\\Graduate\\Work\\Thermal3DGS_sparse\\src\\thermal3dgs_sparse_ir\\metrics.py",
+      "provider": "metrics_py",
+      "sha256": "a3b214986ddcb77645a71246733b52975b14253accb8f575430dffe7e5f72c40"
+    },
+    "summary_recompute_absolute_tolerance": "1E-8",
+    "tie_rule": "exact equality after reading the published 8-decimal CSV values"
+  },
+  "outputs": [
+    {
+      "artifact": "metrics_deltas",
+      "bytes": 3354,
+      "path": "metrics_deltas.csv",
+      "sha256": "1b693118b907e853f4895b82a2c1baaa3328bdddbd0efab33d23d5825e8e6257"
+    },
+    {
+      "artifact": "per_view_deltas",
+      "bytes": 128251,
+      "path": "per_view_deltas.csv",
+      "sha256": "a01a3b714cedfa2448b54ecfc4a55450f6fd87ece47357a26ccecbcf95a4c16b"
+    },
+    {
+      "artifact": "resource_summary",
+      "bytes": 1129,
+      "path": "resource_summary.csv",
+      "sha256": "e19558021217a11426c32153ca323dbeef090d7f95b7f32df890d40faf5df38e"
+    },
+    {
+      "artifact": "qualitative_full",
+      "bytes": 1301400,
+      "path": "qualitative_full.png",
+      "sha256": "02bed2d9fd821ebf4eae6c0488b0c698f9383554e50522dea604fb194420f340"
+    },
+    {
+      "artifact": "absolute_error",
+      "bytes": 3550954,
+      "path": "absolute_error_maps.png",
+      "sha256": "ab7e913c4092b6e6c95bf36abda6674a31a0a9210c1c2236e59146ae3a709117"
+    },
+    {
+      "artifact": "qualitative_zoom",
+      "bytes": 416231,
+      "path": "qualitative_center_zoom.png",
+      "sha256": "49ac6efa73495f9516227456700559160abbec5233bb3f4d62d79307c766831b"
+    }
+  ],
+  "resource_contract": {
+    "core_avg_ms": "cumulative trainer CUDA-event core average, not full iteration wall time",
+    "cuda_allocated_peak_mb": "PyTorch CUDA allocator peak, not whole-card usage",
+    "model_total_bytes": "point_cloud.ply + ATF.pth + TCM.pth",
+    "render_forward_mean_ms": "synchronized ATF + Gaussian renderer + TCM forward time; first five views excluded; PNG I/O excluded",
+    "render_wall_seconds": "per-checkpoint render-set wall time including image writes",
+    "runner_final_render_wall_seconds": "whole final render subprocess from run_manifest.phase_timings.render; reported only for iteration 7000",
+    "train_wall_seconds": "whole train subprocess from run_manifest.phase_timings.train"
+  },
+  "run_snapshot": {
+    "auxiliary_loss_configs": {
+      "B0": {
+        "aux_loss_version": "legacy",
+        "auxiliary_enabled": false,
+        "edge_filter_kernel": 5,
+        "edge_filter_mode": "gaussian",
+        "edge_filter_sigma": 1.0,
+        "filter_active": false,
+        "lambda_edge": 0.0,
+        "lambda_smooth": 0.0,
+        "lambda_thermal": 0.0
+      },
+      "E2": {
+        "aux_loss_version": "filtered_edge",
+        "auxiliary_enabled": true,
+        "edge_filter_kernel": 5,
+        "edge_filter_mode": "gaussian",
+        "edge_filter_sigma": 1.0,
+        "filter_active": true,
+        "lambda_edge": 0.001,
+        "lambda_smooth": 0.0,
+        "lambda_thermal": 0.0
+      },
+      "E2_no_filter": {
+        "aux_loss_version": "filtered_edge",
+        "auxiliary_enabled": true,
+        "edge_filter_kernel": 5,
+        "edge_filter_mode": "identity",
+        "edge_filter_sigma": 1.0,
+        "filter_active": false,
+        "lambda_edge": 0.001,
+        "lambda_smooth": 0.0,
+        "lambda_thermal": 0.0
+      }
+    },
+    "diff_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "head": "86b9b78b6b464795a41c3baa98c4219bb359c12f",
+    "input_file_sha256": {
+      "dataset_manifest": "d4fe9c97ed110fa1ecdf0636a19f7a7062169d3cfbd719d5594158f9d615e919",
+      "degradation_manifest": "06d68ec82b7faa8d65168b9bd2b35f013207331f4683a2ec0ad883837be3f03b",
+      "split_manifest": "c9a1e0aa65e54e1558779b557539cb2eaba4d1faab765b786a4437aa519ba79e"
+    },
+    "source_snapshot_sha256": "4b5de169c39ad88e37c81ff301f784a945a4e7bbb40293ebeb04e2a28c3f3cc3"
+  },
+  "schema_version": 1
+}

@@ -1,0 +1,38 @@
+{
+  "schema": "thermal3dgs.tensorboard_summary",
+  "schema_version": 1,
+  "source_commit": "86b9b78b6b464795a41c3baa98c4219bb359c12f",
+  "source_events": [
+    {
+      "method": "B0",
+      "path": "runs/edge_filter_ablation_7k/B0_trainseed2026/events.out.tfevents.1788933142.YaoChengHua.4276.0",
+      "bytes": 10670398,
+      "sha256": "0c81fafa342004f0ed42b4c2f44f186a780d27acbcc25605641761368dbbaf8d"
+    },
+    {
+      "method": "E2 no filter",
+      "path": "runs/edge_filter_ablation_7k/E2_no_filter_trainseed2026/events.out.tfevents.1788933629.YaoChengHua.33752.0",
+      "bytes": 11146490,
+      "sha256": "44db58944980f909aa1023b9dfb59186d651bfbf1fa406f4e0d23a8193d9de78"
+    },
+    {
+      "method": "E2 Gaussian",
+      "path": "runs/edge_filter_ablation_7k/E2_trainseed2026/events.out.tfevents.1788934130.YaoChengHua.31392.0",
+      "bytes": 11098582,
+      "sha256": "56061d3313187a0238c3468b05a2397260313107a589ef9be684e6e82e667f4c"
+    }
+  ],
+  "plot": {
+    "output": "tensorboard_training_summary.png",
+    "sha256": "c21f8858dbabb9585ac477f8f42d827cd73992a3b431e0244bec1703b0b6425b",
+    "bytes": 228569,
+    "tags": {
+      "loss": "train_loss_patches/total_loss",
+      "edge": "train_loss/auxiliary_edge_raw",
+      "psnr": "val/loss_viewpoint - psnr",
+      "points": "total_points"
+    },
+    "loss_smoothing": "trailing 101-step simple moving average with leading NaN",
+    "internal_validation_note": "observation only; independent PNG metrics remain the primary evaluation"
+  }
+}
