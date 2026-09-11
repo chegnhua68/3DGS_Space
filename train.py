@@ -11,6 +11,7 @@
 
 import os
 import csv
+import hashlib
 import math
 import torch
 from random import randint
@@ -31,6 +32,16 @@ from arguments import (
     OptimizationParams,
     validate_aux_loss_options,
 )
+from integrations.thermal3dgs.gaussian_dropout import GaussianDropoutController
+from integrations.thermal3dgs.run_control import (
+    INTERRUPTED_EXIT_CODE,
+    UserStopRequested,
+    raise_if_stop_requested,
+    resolve_stop_file,
+    utc_now,
+    write_json_atomic,
+    write_run_status,
+)
 import numpy as np
 try:
     from torch.utils.tensorboard import SummaryWriter
@@ -42,6 +53,8 @@ except ImportError:
 #os.environ["CUDA_VISIBLE_DEVICES"] = "0"
 LOSS_COMPONENT_FIELDS = (
     "iteration",
+    "train_seed",
+    "gd_seed",
     "aux_loss_version",
     "edge_filter_mode",
     "filter_active",
@@ -50,6 +63,8 @@ LOSS_COMPONENT_FIELDS = (
     "lambda_thermal",
     "lambda_edge",
     "lambda_smooth",
+    "lambda_detail",
+    "detail_status",
     "L_baseline",
     "L_thermal_raw",
     "L_edge_raw",
@@ -58,9 +73,27 @@ LOSS_COMPONENT_FIELDS = (
     "weighted_L_edge",
     "weighted_L_smooth",
     "L_total",
+    "gd_target_p",
+    "gd_realized_drop_fraction",
+    "gd_compensation",
+    "opacity_base_max",
+    "compensated_opacity_gt1_fraction",
     "Gaussian_count",
     "avg_ms",
     "peak_cuda_mb",
+)
+
+LIVE_LOSS_FIELDS = (
+    "iteration",
+    "timestamp_utc",
+    "phase",
+    "train_seed",
+    "loss_total",
+    "loss_base",
+    "edge_raw",
+    "edge_weighted",
+    "lambda_edge",
+    "gd_target_p",
 )
 
 
@@ -76,11 +109,43 @@ def _append_loss_component_log(path, row):
         csv.DictWriter(stream, fieldnames=LOSS_COMPONENT_FIELDS).writerow(row)
 
 
+def _initialize_live_loss_log(model_path):
+    path = os.path.join(model_path, "live_loss.csv")
+    with open(path, "w", encoding="utf-8", newline="") as stream:
+        csv.DictWriter(stream, fieldnames=LIVE_LOSS_FIELDS).writeheader()
+    return path
+
+
+def _append_live_loss_log(path, row):
+    with open(path, "a", encoding="utf-8", newline="") as stream:
+        csv.DictWriter(stream, fieldnames=LIVE_LOSS_FIELDS).writerow(row)
+
+
 def _raw_and_weighted_term(terms, name, weight):
     if weight == 0:
         return "disabled", 0.0
     raw = float(terms[name].detach().item())
     return raw, weight * raw
+
+
+def _camera_sequence_digest(audit_state):
+    return audit_state["camera_hasher"].copy().hexdigest()
+
+
+def _write_gd_rng_audit(model_path, gd_controller, audit_state, status):
+    write_json_atomic(
+        os.path.join(model_path, "gd_rng_audit.json"),
+        {
+            "schema_version": 1,
+            "status": status,
+            "last_completed_iteration": audit_state["last_completed_iteration"],
+            "camera_sequence_sha256": _camera_sequence_digest(audit_state),
+            "gd_generator_state_sha256": gd_controller.state_sha256(),
+            "gd": gd_controller.audit_config(),
+            "updated_at_utc": utc_now(),
+            "resume_capability": "audit_only_not_optimizer_resume",
+        },
+    )
 
 
 def training(
@@ -90,19 +155,115 @@ def training(
     testing_iterations,
     saving_iterations,
     run_config=None,
-    log_interval=1000,
+    log_interval=500,
+    tb_log_interval=50,
+    tb_flush_secs=5,
+    stop_file=None,
     quiet=False,
 ):
-    if isinstance(log_interval, bool) or not isinstance(log_interval, int) or log_interval < 1:
-        raise ValueError("log_interval must be a positive integer")
+    for name, value in (
+        ("log_interval", log_interval),
+        ("tb_log_interval", tb_log_interval),
+        ("tb_flush_secs", tb_flush_secs),
+    ):
+        if isinstance(value, bool) or not isinstance(value, int) or value < 1:
+            raise ValueError("{} must be a positive integer".format(name))
     validate_aux_loss_options(opt)
+    stop_file = resolve_stop_file(stop_file)
+    audit_state = {
+        "last_completed_iteration": 0,
+        "camera_hasher": hashlib.sha256(),
+    }
+    write_run_status(
+        dataset.model_path,
+        status="running",
+        phase="initializing",
+        last_completed_iteration=0,
+    )
+    tb_writer = prepare_output_and_logger(dataset, run_config, tb_flush_secs)
+    gd_controller = GaussianDropoutController(
+        getattr(opt, "gd_max_rate", 0.0),
+        getattr(opt, "gd_warmup_iterations", 1000),
+        getattr(opt, "gd_ramp_end", 3000),
+        getattr(opt, "gd_seed", 104729),
+        "cuda",
+    )
+    try:
+        raise_if_stop_requested(stop_file, "initializing", 0)
+        result = _training_impl(
+            dataset,
+            opt,
+            pipe,
+            testing_iterations,
+            saving_iterations,
+            tb_writer=tb_writer,
+            gd_controller=gd_controller,
+            audit_state=audit_state,
+            train_seed=getattr(run_config, "seed", 0),
+            log_interval=log_interval,
+            tb_log_interval=tb_log_interval,
+            stop_file=stop_file,
+            quiet=quiet,
+        )
+        _write_gd_rng_audit(dataset.model_path, gd_controller, audit_state, "completed")
+        write_run_status(
+            dataset.model_path,
+            status="completed",
+            phase="completed",
+            last_completed_iteration=audit_state["last_completed_iteration"],
+        )
+        return result
+    except UserStopRequested as exc:
+        audit_state["last_completed_iteration"] = exc.last_completed_iteration
+        _write_gd_rng_audit(dataset.model_path, gd_controller, audit_state, "interrupted")
+        write_run_status(
+            dataset.model_path,
+            status="interrupted",
+            phase=exc.phase,
+            last_completed_iteration=exc.last_completed_iteration,
+            stop_reason="user_request",
+        )
+        raise
+    except Exception as exc:
+        _write_gd_rng_audit(dataset.model_path, gd_controller, audit_state, "failed")
+        write_run_status(
+            dataset.model_path,
+            status="failed",
+            phase="training",
+            last_completed_iteration=audit_state["last_completed_iteration"],
+            error="{}: {}".format(type(exc).__name__, exc),
+        )
+        raise
+    finally:
+        if tb_writer:
+            try:
+                tb_writer.flush()
+            finally:
+                tb_writer.close()
+
+
+def _training_impl(
+    dataset,
+    opt,
+    pipe,
+    testing_iterations,
+    saving_iterations,
+    tb_writer,
+    gd_controller,
+    audit_state,
+    train_seed,
+    log_interval=500,
+    tb_log_interval=50,
+    stop_file=None,
+    quiet=False,
+):
     thermal_weights = (opt.lambda_thermal, opt.lambda_edge, opt.lambda_smooth)
     aux_loss_version = getattr(opt, "aux_loss_version", "legacy")
     edge_filter_mode = getattr(opt, "edge_filter_mode", "gaussian")
     edge_filter_kernel = getattr(opt, "edge_filter_kernel", 5)
     edge_filter_sigma = getattr(opt, "edge_filter_sigma", 1.0)
-    tb_writer = prepare_output_and_logger(dataset, run_config)
     loss_component_path = _initialize_loss_component_log(dataset.model_path)
+    live_loss_path = _initialize_live_loss_log(dataset.model_path)
     auxiliary_enabled = any(weight > 0 for weight in thermal_weights)
     filter_active = bool(
         auxiliary_enabled
@@ -151,7 +312,6 @@ def training(
     iter_end = torch.cuda.Event(enable_timing=True)
 
     viewpoint_stack = None
-    ema_loss_for_log = 0.0
     total_elapsed_ms = 0.0
     best_psnr = 0.0
     best_iteration = 0
@@ -164,6 +324,10 @@ def training(
     smooth_term = get_linear_noise_func(lr_init=0.1, lr_final=1e-15, lr_delay_mult=0.01, max_steps=20000)
     thermal_loss_enabled = auxiliary_enabled
     for iteration in range(1, opt.iterations + 1):
+        if iteration == 1:
+            raise_if_stop_requested(
+                stop_file, "training", audit_state["last_completed_iteration"]
+            )
         if network_gui.conn == None:
             network_gui.try_connect()
         while network_gui.conn != None:
@@ -194,6 +358,9 @@ def training(
         time_interval = 1 / total_frame
 
         viewpoint_cam = viewpoint_stack.pop(randint(0, len(viewpoint_stack) - 1))
+        audit_state["camera_hasher"].update(
+            str(viewpoint_cam.image_name).encode("utf-8") + b"\0"
+        )
         if dataset.load2gpu_on_the_fly:
             viewpoint_cam.load2device()
         fid = viewpoint_cam.fid
@@ -212,7 +379,26 @@ def training(
             # cq: end
 
         # Render
-        render_pkg_re = render(viewpoint_cam, gaussians, pipe, background, d_rgb)
+        gd_target_p = gd_controller.rate(iteration)
+        gd_sample = None
+        gd_base_opacity = None
+        training_opacity_override = None
+        if gd_target_p > 0.0:
+            gd_base_opacity = gaussians.get_opacity
+            gd_sample = gd_controller.apply(
+                gd_base_opacity,
+                iteration,
+                is_training_render=True,
+            )
+            training_opacity_override = gd_sample.opacity
+        render_pkg_re = render(
+            viewpoint_cam,
+            gaussians,
+            pipe,
+            background,
+            d_rgb,
+            training_opacity_override=training_opacity_override,
+        )
         image, viewspace_point_tensor, visibility_filter, radii = render_pkg_re["render"], render_pkg_re[
             "viewspace_points"], render_pkg_re["visibility_filter"], render_pkg_re["radii"]
 
@@ -264,14 +450,15 @@ def training(
         loss.backward()
 
         iter_end.record()
-        loss_value = float(loss.detach().item())
-        if not math.isfinite(loss_value):
-            if tb_writer:
-                tb_writer.flush()
+        finite_loss = torch.isfinite(loss.detach())
+        if hasattr(torch, "_assert_async"):
+            torch._assert_async(
+                finite_loss,
+                "non-finite training loss at iteration {}".format(iteration),
+            )
+        elif not bool(finite_loss.item()):
             raise FloatingPointError(
-                "non-finite training loss at iteration {}: {}".format(
-                    iteration, loss_value
-                )
+                "non-finite training loss at iteration {}".format(iteration)
             )
 
         if dataset.load2gpu_on_the_fly:
@@ -280,24 +467,92 @@ def training(
         with torch.no_grad():
             elapsed_ms = iter_start.elapsed_time(iter_end)
             total_elapsed_ms += elapsed_ms
-            ema_loss_for_log = 0.4 * loss_value + 0.6 * ema_loss_for_log
             progress_bar.update(1)
-            if iteration % log_interval == 0 or iteration == opt.iterations:
-                progress_bar.set_postfix({"loss": f"{ema_loss_for_log:.6f}"})
+            live_due = (
+                iteration == 1
+                or iteration % tb_log_interval == 0
+                or iteration == opt.iterations
+            )
+            audit_due = iteration % log_interval == 0 or iteration == opt.iterations
+            scalar_values = None
+            if live_due or audit_due:
+                edge_tensor = (
+                    thermal_terms["edge"]
+                    if opt.lambda_edge > 0 and thermal_terms is not None
+                    else baseline_loss.new_zeros(())
+                )
+                packed = torch.stack(
+                    (
+                        loss.detach(),
+                        baseline_loss.detach(),
+                        edge_tensor.detach(),
+                        (edge_tensor * opt.lambda_edge).detach(),
+                    )
+                ).cpu().tolist()
+                scalar_values = {
+                    "loss_total": packed[0],
+                    "loss_base": packed[1],
+                    "edge_raw": packed[2],
+                    "edge_weighted": packed[3],
+                }
+
+            if live_due:
+                live_row = {
+                    "iteration": iteration,
+                    "timestamp_utc": utc_now(),
+                    "phase": "train",
+                    "train_seed": train_seed,
+                    **scalar_values,
+                    "lambda_edge": opt.lambda_edge,
+                    "gd_target_p": gd_target_p,
+                }
+                _append_live_loss_log(live_loss_path, live_row)
+                if tb_writer:
+                    for tag, field in (
+                        ("train/loss_total", "loss_total"),
+                        ("train/loss_base", "loss_base"),
+                        ("train/edge_raw", "edge_raw"),
+                        ("train/edge_weighted", "edge_weighted"),
+                    ):
+                        tb_writer.add_scalar(tag, scalar_values[field], iteration)
+                    tb_writer.add_scalar("train/lambda_edge", opt.lambda_edge, iteration)
+                    tb_writer.add_scalar("gd/target_p", gd_target_p, iteration)
+                    if iteration == 1:
+                        tb_writer.flush()
+
+            if audit_due:
                 peak_memory_mb = torch.cuda.max_memory_allocated() / (1024 * 1024)
                 average_ms = total_elapsed_ms / iteration
                 terms = thermal_terms or {}
                 raw_thermal, weighted_thermal = _raw_and_weighted_term(
                     terms, "thermal", opt.lambda_thermal
                 )
-                raw_edge, weighted_edge = _raw_and_weighted_term(
-                    terms, "edge", opt.lambda_edge
-                )
+                raw_edge = scalar_values["edge_raw"] if opt.lambda_edge > 0 else "disabled"
+                weighted_edge = scalar_values["edge_weighted"]
                 raw_smooth, weighted_smooth = _raw_and_weighted_term(
                     terms, "smooth", opt.lambda_smooth
                 )
+                if gd_sample is None:
+                    gd_realized_drop_fraction = 0.0
+                    gd_compensation = 1.0
+                    opacity_base_max = "disabled"
+                    compensated_opacity_gt1_fraction = "disabled"
+                else:
+                    gd_stats = torch.stack(
+                        (
+                            1.0 - gd_sample.keep_mask.float().mean(),
+                            gd_base_opacity.detach().amax(),
+                            (gd_sample.opacity.detach() > 1.0).float().mean(),
+                        )
+                    ).cpu().tolist()
+                    gd_realized_drop_fraction = gd_stats[0]
+                    opacity_base_max = gd_stats[1]
+                    compensated_opacity_gt1_fraction = gd_stats[2]
+                    gd_compensation = gd_sample.compensation
                 component_row = {
                     "iteration": iteration,
+                    "train_seed": train_seed,
+                    "gd_seed": gd_controller.seed,
                     "aux_loss_version": aux_loss_version,
                     "edge_filter_mode": edge_filter_mode,
                     "filter_active": str(filter_active).lower(),
@@ -306,102 +561,74 @@ def training(
                     "lambda_thermal": opt.lambda_thermal,
                     "lambda_edge": opt.lambda_edge,
                     "lambda_smooth": opt.lambda_smooth,
-                    "L_baseline": float(baseline_loss.detach().item()),
+                    "lambda_detail": 0.0,
+                    "detail_status": "disabled",
+                    "L_baseline": scalar_values["loss_base"],
                     "L_thermal_raw": raw_thermal,
                     "L_edge_raw": raw_edge,
                     "L_smooth_raw": raw_smooth,
                     "weighted_L_thermal": weighted_thermal,
                     "weighted_L_edge": weighted_edge,
                     "weighted_L_smooth": weighted_smooth,
-                    "L_total": float(loss.detach().item()),
+                    "L_total": scalar_values["loss_total"],
+                    "gd_target_p": gd_target_p,
+                    "gd_realized_drop_fraction": gd_realized_drop_fraction,
+                    "gd_compensation": gd_compensation,
+                    "opacity_base_max": opacity_base_max,
+                    "compensated_opacity_gt1_fraction": compensated_opacity_gt1_fraction,
                     "Gaussian_count": gaussians.get_xyz.shape[0],
                     "avg_ms": average_ms,
                     "peak_cuda_mb": peak_memory_mb,
                 }
                 _append_loss_component_log(loss_component_path, component_row)
-                iteration_summary = [
-                    "[ITER {}]".format(iteration),
-                    "version={}".format(aux_loss_version),
-                    "edge_filter_mode={}".format(edge_filter_mode),
-                    "filter_active={}".format(str(filter_active).lower()),
-                    "lambda_edge={:g}".format(opt.lambda_edge),
-                    "L_baseline={:.6f}".format(component_row["L_baseline"]),
-                ]
-                if opt.lambda_thermal > 0:
-                    iteration_summary.extend(
-                        (
-                            "L_thermal_raw={:.6f}".format(raw_thermal),
-                            "weighted_L_thermal={:.6f}".format(weighted_thermal),
-                        )
-                    )
-                iteration_summary.extend(
-                    (
-                        "L_edge_raw={}".format(
-                            raw_edge
-                            if raw_edge == "disabled"
-                            else "{:.6f}".format(raw_edge)
-                        ),
-                        "weighted_L_edge={:.6f}".format(weighted_edge),
-                    )
+                progress_bar.set_postfix(
+                    {"loss": "{:.6f}".format(component_row["L_total"])}
                 )
-                if opt.lambda_smooth > 0:
-                    iteration_summary.extend(
-                        (
-                            "L_smooth_raw={:.6f}".format(raw_smooth),
-                            "weighted_L_smooth={:.6f}".format(weighted_smooth),
-                        )
-                    )
-                iteration_summary.extend(
-                    (
-                        "L_total={:.6f}".format(component_row["L_total"]),
-                        "points={}".format(gaussians.get_xyz.shape[0]),
-                        "avg_ms={:.2f}".format(average_ms),
-                        "peak_cuda_mb={:.1f}".format(peak_memory_mb),
-                    )
+                print(
+                    "[ITER {}] total={:.6f} edge={} gd_p={:.4f} points={} avg_ms={:.2f} peak_mib={:.1f}".format(
+                        iteration,
+                        component_row["L_total"],
+                        raw_edge if raw_edge == "disabled" else "{:.6f}".format(raw_edge),
+                        gd_target_p,
+                        gaussians.get_xyz.shape[0],
+                        average_ms,
+                        peak_memory_mb,
+                    ),
+                    flush=True,
                 )
-                print(" ".join(iteration_summary), flush=True)
+                if tb_writer:
+                    tb_writer.add_scalar(
+                        "gd/realized_drop_fraction",
+                        gd_realized_drop_fraction,
+                        iteration,
+                    )
+                    tb_writer.add_scalar("gd/compensation", gd_compensation, iteration)
+                    tb_writer.add_scalar(
+                        "model/gaussian_count", gaussians.get_xyz.shape[0], iteration
+                    )
+                    tb_writer.add_scalar("system/core_avg_ms", average_ms, iteration)
+                    tb_writer.add_scalar(
+                        "system/cuda_allocated_peak_mib", peak_memory_mb, iteration
+                    )
 
             # Keep track of max radii in image-space for pruning
             gaussians.max_radii2D[visibility_filter] = torch.max(gaussians.max_radii2D[visibility_filter],
                                                                  radii[visibility_filter])
 
             # Log and save
-            cur_psnr = training_report(tb_writer, iteration, Ll1, loss, l1_loss, elapsed_ms,
+            if iteration in testing_iterations:
+                write_run_status(
+                    dataset.model_path,
+                    status="running",
+                    phase="val_monitor",
+                    last_completed_iteration=audit_state["last_completed_iteration"],
+                )
+            cur_psnr = training_report(tb_writer, iteration,
                                        testing_iterations, scene, render, (pipe, background), ATF,
                                        TCM, dataset.load2gpu_on_the_fly,
-                                       dataset.evaluation_partition if dataset.dataset_manifest else "test")
-            if tb_writer:
-                tb_writer.add_scalar(
-                    "train_loss/baseline", baseline_loss.detach().item(), iteration
-                )
-                auxiliary_total = (
-                    thermal_extra.detach().item()
-                    if thermal_extra is not None
-                    else 0.0
-                )
-                tb_writer.add_scalar(
-                    "train_loss/auxiliary_weighted_total",
-                    auxiliary_total,
-                    iteration,
-                )
-                for name, weight in zip(
-                    ("thermal", "edge", "smooth"), thermal_weights
-                ):
-                    if weight > 0:
-                        raw_value = thermal_terms[name].detach().item()
-                        tb_writer.add_scalar(
-                            "train_loss/auxiliary_{}_raw".format(name),
-                            raw_value,
-                            iteration,
-                        )
-                        weighted_value = weight * raw_value
-                    else:
-                        weighted_value = 0.0
-                    tb_writer.add_scalar(
-                        "train_loss/auxiliary_{}_weighted".format(name),
-                        weighted_value,
-                        iteration,
-                    )
+                                       dataset.evaluation_partition if dataset.dataset_manifest else "test",
+                                       stop_file=stop_file,
+                                       last_completed_iteration=audit_state["last_completed_iteration"])
             if iteration in testing_iterations:
                 if cur_psnr.item() > best_psnr:
                     best_psnr = cur_psnr.item()
@@ -409,6 +636,8 @@ def training(
 
             if iteration in saving_iterations:
                 print("[ITER {}] saving model".format(iteration), flush=True)
+                if tb_writer:
+                    tb_writer.flush()
                 scene.save(iteration)
                 ATF.save_weights(scene.model_path, iteration)
                 TCM.save_weights(scene.model_path, iteration)
@@ -437,13 +666,28 @@ def training(
                 TCM.optimizer.zero_grad()
                 TCM.update_learning_rate(iteration)
 
+            audit_state["last_completed_iteration"] = iteration
+            if iteration in saving_iterations:
+                _write_gd_rng_audit(
+                    dataset.model_path, gd_controller, audit_state, "running"
+                )
+                if tb_writer:
+                    tb_writer.flush()
+            if iteration % 50 == 0 or iteration == opt.iterations:
+                write_run_status(
+                    dataset.model_path,
+                    status="running",
+                    phase="training",
+                    last_completed_iteration=iteration,
+                )
+                raise_if_stop_requested(stop_file, "training", iteration)
+
     progress_bar.close()
-    if tb_writer:
-        tb_writer.close()
     print("Best PSNR = {} in Iteration {}".format(best_psnr, best_iteration), flush=True)
+    return {"best_psnr": best_psnr, "best_iteration": best_iteration}
 
 
-def prepare_output_and_logger(args, run_config=None):
+def prepare_output_and_logger(args, run_config=None, flush_secs=5):
     if not args.model_path:
         if os.getenv('OAR_JOB_ID'):
             unique_str = os.getenv('OAR_JOB_ID')
@@ -463,20 +707,19 @@ def prepare_output_and_logger(args, run_config=None):
     # Create Tensorboard writer
     tb_writer = None
     if TENSORBOARD_FOUND:
-        tb_writer = SummaryWriter(args.model_path, flush_secs=5)
+        tb_writer = SummaryWriter(args.model_path, max_queue=100, flush_secs=flush_secs)
     return tb_writer
 
 
-def training_report(tb_writer, iteration, Ll1, loss, l1_loss, elapsed, testing_iterations, scene: Scene, renderFunc,
-                    renderArgs, ATF, TCM, load2gpu_on_the_fly, evaluation_partition="test"):
-    if tb_writer:
-        tb_writer.add_scalar('train_loss_patches/l1_loss', Ll1.item(), iteration)
-        tb_writer.add_scalar('train_loss_patches/total_loss', loss.item(), iteration)
-        tb_writer.add_scalar('iter_time', elapsed, iteration)
-
+def training_report(tb_writer, iteration, testing_iterations, scene: Scene, renderFunc,
+                    renderArgs, ATF, TCM, load2gpu_on_the_fly, evaluation_partition="test",
+                    stop_file=None, last_completed_iteration=0):
     test_psnr = 0.0
     # Report test and samples of training set
     if iteration in testing_iterations:
+        raise_if_stop_requested(
+            stop_file, "val_monitor", last_completed_iteration
+        )
         torch.cuda.empty_cache()
         validation_configs = ({'name': evaluation_partition, 'cameras': scene.getTestCameras()},
                               {'name': 'train',
@@ -488,9 +731,9 @@ def training_report(tb_writer, iteration, Ll1, loss, l1_loss, elapsed, testing_i
                 images = torch.tensor([], device="cuda")
                 gts = torch.tensor([], device="cuda")
                 for idx, viewpoint in enumerate(config['cameras']):
-                
-                
-                
+                    raise_if_stop_requested(
+                        stop_file, "val_monitor", last_completed_iteration
+                    )
                     if load2gpu_on_the_fly:
                         viewpoint.load2device()
                         
@@ -526,25 +769,17 @@ def training_report(tb_writer, iteration, Ll1, loss, l1_loss, elapsed, testing_i
 
                     if load2gpu_on_the_fly:
                         viewpoint.load2device('cpu')
-                    if tb_writer and (idx < 5):
-                        tb_writer.add_images(config['name'] + "_view_{}/render".format(viewpoint.image_name),
-                                             image[None], global_step=iteration)
-                        if iteration == testing_iterations[0]:
-                            tb_writer.add_images(config['name'] + "_view_{}/ground_truth".format(viewpoint.image_name),
-                                                 gt_image[None], global_step=iteration)
-
                 l1_test = l1_loss(images, gts)
                 psnr_test = psnr(images, gts).mean()
                 if config['name'] == evaluation_partition or len(validation_configs[0]['cameras']) == 0:
                     test_psnr = psnr_test
                 print("[ITER {}] Evaluating {}: L1 {} PSNR {}".format(iteration, config['name'], l1_test, psnr_test))
-                if tb_writer:
-                    tb_writer.add_scalar(config['name'] + '/loss_viewpoint - l1_loss', l1_test, iteration)
-                    tb_writer.add_scalar(config['name'] + '/loss_viewpoint - psnr', psnr_test, iteration)
+                if tb_writer and config['name'] == evaluation_partition:
+                    tb_writer.add_scalar('val_monitor/l1', l1_test, iteration)
+                    tb_writer.add_scalar('val_monitor/psnr', psnr_test, iteration)
 
         if tb_writer:
-            tb_writer.add_histogram("scene/opacity_histogram", scene.gaussians.get_opacity, iteration)
-            tb_writer.add_scalar('total_points', scene.gaussians.get_xyz.shape[0], iteration)
+            tb_writer.flush()
         torch.cuda.empty_cache()
 
     return test_psnr
@@ -566,8 +801,26 @@ if __name__ == "__main__":
     parser.add_argument(
         "--log_interval",
         type=int,
-        default=1000,
-        help="update the training summary at this iteration interval (default: 1000)",
+        default=500,
+        help="write the detailed audit log at this iteration interval (default: 500)",
+    )
+    parser.add_argument(
+        "--tb_log_interval",
+        type=int,
+        default=50,
+        help="write live TensorBoard scalars at this iteration interval (default: 50)",
+    )
+    parser.add_argument(
+        "--tb_flush_secs",
+        type=int,
+        default=5,
+        help="SummaryWriter asynchronous flush interval in seconds",
+    )
+    parser.add_argument(
+        "--stop_file",
+        type=str,
+        default=None,
+        help="absolute or project-relative sticky stop request file",
     )
     parser.add_argument("--seed", type=int, default=0)
     args = parser.parse_args(sys.argv[1:])
@@ -585,16 +838,28 @@ if __name__ == "__main__":
     # Start GUI server, configure and run training
     # network_gui.init(args.ip, args.port)
     torch.autograd.set_detect_anomaly(args.detect_anomaly)
-    training(
-        dataset,
-        optimization,
-        pipeline,
-        args.test_iterations,
-        args.save_iterations,
-        run_config=args,
-        log_interval=args.log_interval,
-        quiet=args.quiet,
-    )
+    try:
+        training(
+            dataset,
+            optimization,
+            pipeline,
+            args.test_iterations,
+            args.save_iterations,
+            run_config=args,
+            log_interval=args.log_interval,
+            tb_log_interval=args.tb_log_interval,
+            tb_flush_secs=args.tb_flush_secs,
+            stop_file=args.stop_file,
+            quiet=args.quiet,
+        )
+    except UserStopRequested as exc:
+        print(
+            "[INTERRUPTED] phase={} last_completed_iteration={} stop_reason=user_request".format(
+                exc.phase, exc.last_completed_iteration
+            ),
+            flush=True,
+        )
+        sys.exit(INTERRUPTED_EXIT_CODE)
 
     # All done
     print("Training complete.", flush=True)

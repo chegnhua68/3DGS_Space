@@ -24,6 +24,7 @@ RESERVED_ARGUMENTS = frozenset(
         "dataset_manifest",
         "split_manifest",
         "degradation_manifest",
+        "stop_file",
     )
 )
 INPUT_HASH_KEYS = frozenset(
@@ -33,6 +34,13 @@ INPUT_HASH_KEYS = frozenset(
 
 class MatrixError(ValueError):
     pass
+
+
+class ExperimentInterrupted(RuntimeError):
+    def __init__(self, phase: str, reason: str = "user_request"):
+        self.phase = phase
+        self.reason = reason
+        super().__init__("experiment interrupted during {} ({})".format(phase, reason))
 
 
 def _validate_aux_loss_arguments(arguments: Mapping[str, object], label: str) -> None:
@@ -77,6 +85,36 @@ def _validate_aux_loss_arguments(arguments: Mapping[str, object], label: str) ->
                 raise MatrixError(
                     "filtered_edge requires lambda_thermal == 0 and lambda_smooth == 0"
                 )
+    lambda_detail = arguments.get("lambda_detail", 0.0)
+    if (
+        isinstance(lambda_detail, bool)
+        or not isinstance(lambda_detail, (int, float))
+        or not math.isfinite(float(lambda_detail))
+        or float(lambda_detail) != 0.0
+    ):
+        raise MatrixError("{}.lambda_detail must remain exactly 0 on the E2/GD branch".format(label))
+
+
+def _validate_gd_arguments(arguments: Mapping[str, object], label: str) -> None:
+    max_rate = arguments.get("gd_max_rate", 0.0)
+    if (
+        isinstance(max_rate, bool)
+        or not isinstance(max_rate, (int, float))
+        or not math.isfinite(float(max_rate))
+        or not 0.0 <= float(max_rate) < 1.0
+    ):
+        raise MatrixError("{}.gd_max_rate must be finite and in [0, 1)".format(label))
+    warmup = arguments.get("gd_warmup_iterations", 1000)
+    ramp_end = arguments.get("gd_ramp_end", 3000)
+    gd_seed = arguments.get("gd_seed", 104729)
+    if any(isinstance(value, bool) or not isinstance(value, int) for value in (warmup, ramp_end, gd_seed)):
+        raise MatrixError("{}.gd warmup, ramp_end, and seed must be integers".format(label))
+    if warmup < 0 or ramp_end <= warmup or gd_seed < 0:
+        raise MatrixError("{}.gd schedule or seed is invalid".format(label))
+    for name in ("log_interval", "tb_log_interval", "tb_flush_secs"):
+        value = arguments.get(name, {"log_interval": 500, "tb_log_interval": 50, "tb_flush_secs": 5}[name])
+        if isinstance(value, bool) or not isinstance(value, int) or value < 1:
+            raise MatrixError("{}.{} must be a positive integer".format(label, name))
 
 
 def _resolved_auxiliary_loss_config(
@@ -253,6 +291,9 @@ def load_matrix(path: Path) -> Dict[str, object]:
         _validate_aux_loss_arguments(
             resolved_arguments, "experiments[{}]".format(index)
         )
+        _validate_gd_arguments(
+            resolved_arguments, "experiments[{}]".format(index)
+        )
     return matrix
 
 
@@ -306,6 +347,8 @@ def build_commands(
     arguments = dict(matrix["common_args"])
     arguments.update(experiment["args"])
     _append_arguments(train_command, arguments)
+    stop_file = _resolve_path(str(matrix["output_root"])) / "STOP_REQUESTED"
+    train_command.extend(("--stop_file", str(stop_file)))
     evaluation_partition = arguments.get("evaluation_partition", "test")
     if evaluation_partition not in ("val", "test"):
         raise MatrixError("evaluation_partition must be 'val' or 'test'")
@@ -320,6 +363,7 @@ def build_commands(
     ]
     if arguments.get("quiet") is True:
         render_command.append("--quiet")
+    render_command.extend(("--stop_file", str(stop_file)))
     return output_path, train_command, render_command
 
 
@@ -422,6 +466,47 @@ def _utc_now() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
+def _run_child(
+    command: Sequence[str],
+    *,
+    cwd: Path,
+    stdout_stream,
+    stderr_stream,
+    stop_file: Optional[Path],
+    phase: str,
+    record: Dict[str, object],
+    run_manifest_path: Path,
+) -> None:
+    if stop_file is not None and stop_file.is_file():
+        raise ExperimentInterrupted(phase)
+    process = subprocess.Popen(
+        list(command),
+        cwd=str(cwd),
+        stdout=stdout_stream,
+        stderr=stderr_stream,
+    )
+    record.setdefault("processes", {})[phase] = {"pid": process.pid}
+    _write_json_atomic(run_manifest_path, record)
+    keyboard_stop = False
+    while True:
+        try:
+            return_code = process.wait(timeout=0.5)
+            break
+        except subprocess.TimeoutExpired:
+            continue
+        except KeyboardInterrupt:
+            keyboard_stop = True
+            if stop_file is not None:
+                stop_file.parent.mkdir(parents=True, exist_ok=True)
+                stop_file.touch(exist_ok=True)
+            continue
+    record.setdefault("processes", {})[phase]["returncode"] = return_code
+    if return_code == 130 or keyboard_stop or (stop_file is not None and stop_file.is_file()):
+        raise ExperimentInterrupted(phase)
+    if return_code != 0:
+        raise subprocess.CalledProcessError(return_code, list(command))
+
+
 def run_experiment(
     name: str,
     output_path: Path,
@@ -432,7 +517,8 @@ def run_experiment(
     allow_existing: bool,
     expected_input_hashes: Optional[Mapping[str, str]] = None,
     auxiliary_loss_config: Optional[Mapping[str, object]] = None,
-) -> None:
+    stop_file: Optional[Path] = None,
+) -> str:
     if output_path.exists() and not allow_existing:
         raise FileExistsError(
             "refusing to reuse existing experiment output: {}".format(output_path)
@@ -478,16 +564,19 @@ def run_experiment(
             "w", encoding="utf-8", buffering=1
         ) as stderr_stream:
             if not skip_train:
-                print("[{}] train started".format(name), flush=True)
+                print("[START] {} train".format(name), flush=True)
                 phase_started = _utc_now()
                 phase_clock = time.perf_counter()
                 try:
-                    subprocess.run(
+                    _run_child(
                         train_command,
                         cwd=str(REPOSITORY_ROOT),
-                        check=True,
-                        stdout=stdout_stream,
-                        stderr=stderr_stream,
+                        stdout_stream=stdout_stream,
+                        stderr_stream=stderr_stream,
+                        stop_file=stop_file,
+                        phase="train",
+                        record=record,
+                        run_manifest_path=run_manifest_path,
                     )
                 finally:
                     record["phase_timings"]["train"] = {
@@ -495,18 +584,21 @@ def run_experiment(
                         "finished_at_utc": _utc_now(),
                         "wall_seconds": time.perf_counter() - phase_clock,
                     }
-                print("[{}] train completed".format(name), flush=True)
+                print("[DONE] {} train".format(name), flush=True)
             if not skip_render:
-                print("[{}] render started".format(name), flush=True)
+                print("[START] {} render".format(name), flush=True)
                 phase_started = _utc_now()
                 phase_clock = time.perf_counter()
                 try:
-                    subprocess.run(
+                    _run_child(
                         render_command,
                         cwd=str(REPOSITORY_ROOT),
-                        check=True,
-                        stdout=stdout_stream,
-                        stderr=stderr_stream,
+                        stdout_stream=stdout_stream,
+                        stderr_stream=stderr_stream,
+                        stop_file=stop_file,
+                        phase="render",
+                        record=record,
+                        run_manifest_path=run_manifest_path,
                     )
                 finally:
                     record["phase_timings"]["render"] = {
@@ -514,12 +606,24 @@ def run_experiment(
                         "finished_at_utc": _utc_now(),
                         "wall_seconds": time.perf_counter() - phase_clock,
                     }
-                print("[{}] render completed".format(name), flush=True)
+                print("[DONE] {} render".format(name), flush=True)
         record["status"] = "completed"
+        return record["status"]
+    except ExperimentInterrupted as exc:
+        record["status"] = "interrupted"
+        record["stop_reason"] = exc.reason
+        record["interrupted_phase"] = exc.phase
+        print(
+            "[INTERRUPTED] {} phase={} stop_reason={} (see stdout.log/stderr.log)".format(
+                name, exc.phase, exc.reason
+            ),
+            flush=True,
+        )
+        return record["status"]
     except (OSError, subprocess.CalledProcessError) as exc:
         record["status"] = "failed"
         record["error"] = str(exc)
-        print("[{}] failed: {} (see stdout.log/stderr.log)".format(name, exc), flush=True)
+        print("[FAILED] {}: {} (see stdout.log/stderr.log)".format(name, exc), flush=True)
         raise
     finally:
         record["finished_at_utc"] = _utc_now()
@@ -548,18 +652,57 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
             raise MatrixError(
                 "unknown experiment(s): {}".format(", ".join(sorted(selected - known_names)))
             )
-        for experiment in matrix["experiments"]:
+        experiments = [
+            experiment
+            for experiment in matrix["experiments"]
+            if selected is None or experiment["name"] in selected
+        ]
+        batch_root = _resolve_path(str(matrix["output_root"]))
+        stop_file = batch_root / "STOP_REQUESTED"
+        batch_manifest_path = batch_root / "batch_manifest.json"
+        batch_record = {
+            "schema_version": 1,
+            "status": "planned" if args.dry_run else "running",
+            "started_at_utc": _utc_now(),
+            "finished_at_utc": None,
+            "stop_file": str(stop_file),
+            "experiments": [
+                {"name": experiment["name"], "status": "not_started"}
+                for experiment in experiments
+            ],
+        }
+        if not args.dry_run:
+            if stop_file.exists():
+                raise MatrixError(
+                    "stop request already exists; refusing to start a new batch: {}".format(
+                        stop_file
+                    )
+                )
+            batch_root.mkdir(parents=True, exist_ok=True)
+            _write_json_atomic(batch_manifest_path, batch_record)
+        for index, experiment in enumerate(experiments):
             name = experiment["name"]
-            if selected is not None and name not in selected:
-                continue
             output, train_command, render_command = build_commands(matrix, experiment)
             if args.dry_run:
                 if not args.skip_train:
                     print("[{}] {}".format(name, subprocess.list2cmdline(train_command)))
                 if not args.skip_render:
                     print("[{}] {}".format(name, subprocess.list2cmdline(render_command)))
-            else:
-                run_experiment(
+                continue
+            if stop_file.exists():
+                batch_record["status"] = "interrupted"
+                batch_record["stop_reason"] = "user_request"
+                for pending in batch_record["experiments"][index:]:
+                    pending["status"] = "not_started_due_to_user_stop"
+                batch_record["finished_at_utc"] = _utc_now()
+                _write_json_atomic(batch_manifest_path, batch_record)
+                print("[INTERRUPTED] batch stop requested before {}".format(name), flush=True)
+                return 130
+            batch_record["experiments"][index]["status"] = "running"
+            batch_record["experiments"][index]["started_at_utc"] = _utc_now()
+            _write_json_atomic(batch_manifest_path, batch_record)
+            try:
+                status = run_experiment(
                     name,
                     output,
                     train_command,
@@ -571,7 +714,30 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
                     _resolved_auxiliary_loss_config(
                         matrix["common_args"], experiment["args"]
                     ),
+                    stop_file=stop_file,
                 )
+            except Exception:
+                batch_record["experiments"][index]["status"] = "failed"
+                batch_record["experiments"][index]["finished_at_utc"] = _utc_now()
+                batch_record["status"] = "failed"
+                batch_record["finished_at_utc"] = _utc_now()
+                _write_json_atomic(batch_manifest_path, batch_record)
+                raise
+            batch_record["experiments"][index]["status"] = status
+            batch_record["experiments"][index]["finished_at_utc"] = _utc_now()
+            if status == "interrupted":
+                batch_record["status"] = "interrupted"
+                batch_record["stop_reason"] = "user_request"
+                for pending in batch_record["experiments"][index + 1:]:
+                    pending["status"] = "not_started_due_to_user_stop"
+                batch_record["finished_at_utc"] = _utc_now()
+                _write_json_atomic(batch_manifest_path, batch_record)
+                return 130
+            _write_json_atomic(batch_manifest_path, batch_record)
+        if not args.dry_run:
+            batch_record["status"] = "completed"
+            batch_record["finished_at_utc"] = _utc_now()
+            _write_json_atomic(batch_manifest_path, batch_record)
     except (MatrixError, OSError, TypeError, ValueError) as exc:
         parser.error(str(exc))
     return 0

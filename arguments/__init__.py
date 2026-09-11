@@ -16,6 +16,10 @@ import sys
 import os
 from collections.abc import Mapping
 
+from integrations.thermal3dgs.gaussian_dropout import (
+    validate_gaussian_dropout_options,
+)
+
 
 class GroupParams:
     pass
@@ -73,6 +77,14 @@ def validate_aux_loss_options(options) -> None:
         raise ValueError(
             "filtered_edge requires lambda_thermal == 0 and lambda_smooth == 0"
         )
+
+    lambda_detail = _option_value(options, "lambda_detail", 0.0)
+    if isinstance(lambda_detail, bool) or not isinstance(lambda_detail, (int, float)):
+        raise TypeError("lambda_detail must be a real scalar")
+    if not math.isfinite(float(lambda_detail)) or float(lambda_detail) != 0.0:
+        raise ValueError("lambda_detail must remain 0 on the E2/GD branch")
+
+    validate_gaussian_dropout_options(options)
 
 
 def evaluation_output_name(dataset_manifest, evaluation_partition):
@@ -169,12 +181,17 @@ class OptimizationParams(ParamGroup):
         self.lambda_thermal = 0.0
         self.lambda_edge = 0.0
         self.lambda_smooth = 0.0
+        self.lambda_detail = 0.0
         self.noise_beta = 5.0
         self.edge_gamma = 3.0
         self.aux_loss_version = "legacy"
         self.edge_filter_mode = "gaussian"
         self.edge_filter_kernel = 5
         self.edge_filter_sigma = 1.0
+        self.gd_max_rate = 0.0
+        self.gd_warmup_iterations = 1000
+        self.gd_ramp_end = 3000
+        self.gd_seed = 104729
         self.densification_interval = 100
         self.opacity_reset_interval = 3000
         self.densify_from_iter = 500

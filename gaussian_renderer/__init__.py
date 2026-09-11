@@ -30,7 +30,7 @@ def quaternion_multiply(q1, q2):
 
 
 def render(viewpoint_camera, pc: GaussianModel, pipe, bg_color: torch.Tensor, d_rgb,
-           scaling_modifier=1.0, override_color=None):
+           scaling_modifier=1.0, override_color=None, training_opacity_override=None):
     """
     Render the scene. 
     
@@ -72,7 +72,14 @@ def render(viewpoint_camera, pc: GaussianModel, pipe, bg_color: torch.Tensor, d_
     #         torch.bmm(d_xyz, to_homogenous(pc.get_xyz).unsqueeze(-1)).squeeze(-1))
     means3D = pc.get_xyz
     means2D = screenspace_points
-    opacity = pc.get_opacity
+    if training_opacity_override is None:
+        opacity = pc.get_opacity
+    else:
+        opacity = training_opacity_override
+        if opacity.ndim != 2 or opacity.shape != (means3D.shape[0], 1):
+            raise ValueError("training_opacity_override must have shape [N, 1]")
+        if opacity.device != means3D.device:
+            raise ValueError("training_opacity_override must be on the Gaussian device")
 
     # If precomputed 3d covariance is provided, use it. If not, then it will be computed from
     # scaling / rotation by the rasterizer.

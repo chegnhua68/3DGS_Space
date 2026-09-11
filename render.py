@@ -27,6 +27,11 @@ from arguments import (
     get_combined_args,
 )
 from gaussian_renderer import GaussianModel
+from integrations.thermal3dgs.run_control import (
+    INTERRUPTED_EXIT_CODE,
+    UserStopRequested,
+    raise_if_stop_requested,
+)
 import imageio
 import numpy as np
 import math
@@ -49,7 +54,7 @@ def _write_json_atomic(path, value):
             os.unlink(temporary_path)
 
 
-def render_set(model_path, load2gpu_on_the_fly, name, iteration, views, gaussians, pipeline, background, ATF, TCM, quiet=False):
+def render_set(model_path, load2gpu_on_the_fly, name, iteration, views, gaussians, pipeline, background, ATF, TCM, quiet=False, stop_file=None):
     render_path = os.path.join(model_path, name, "ours_{}".format(iteration), "renders")
     gts_path = os.path.join(model_path, name, "ours_{}".format(iteration), "gt")
     depth_path = os.path.join(model_path, name, "ours_{}".format(iteration), "depth")
@@ -61,6 +66,7 @@ def render_set(model_path, load2gpu_on_the_fly, name, iteration, views, gaussian
     render_wall_start = time.perf_counter()
 
     for idx, view in enumerate(tqdm(views, desc="Rendering", disable=quiet, mininterval=5.0)):
+        raise_if_stop_requested(stop_file, "render", iteration)
         if load2gpu_on_the_fly:
             view.load2device()
         fid = view.fid
@@ -116,7 +122,7 @@ def render_set(model_path, load2gpu_on_the_fly, name, iteration, views, gaussian
     )
 
 
-def interpolate_time(model_path, load2gpt_on_the_fly, name, iteration, views, gaussians, pipeline, background, ATF, TCM, quiet=False):
+def interpolate_time(model_path, load2gpt_on_the_fly, name, iteration, views, gaussians, pipeline, background, ATF, TCM, quiet=False, stop_file=None):
     render_path = os.path.join(model_path, name, "interpolate_{}".format(iteration), "renders")
     depth_path = os.path.join(model_path, name, "interpolate_{}".format(iteration), "depth")
 
@@ -130,6 +136,7 @@ def interpolate_time(model_path, load2gpt_on_the_fly, name, iteration, views, ga
     view = views[idx]
     renderings = []
     for t in tqdm(range(0, frame, 1), desc="Rendering", disable=quiet, mininterval=5.0):
+        raise_if_stop_requested(stop_file, "render", iteration)
         fid = torch.Tensor([t / (frame - 1)]).cuda()
         xyz = gaussians.get_xyz
         time_input = fid.unsqueeze(0).expand(xyz.shape[0], -1)
@@ -143,7 +150,7 @@ def interpolate_time(model_path, load2gpt_on_the_fly, name, iteration, views, ga
     imageio.mimwrite(os.path.join(render_path, 'video.mp4'), renderings, fps=30, quality=8)
 
 
-def interpolate_all(model_path, load2gpt_on_the_fly, name, iteration, views, gaussians, pipeline, background, ATF, TCM, quiet=False):
+def interpolate_all(model_path, load2gpt_on_the_fly, name, iteration, views, gaussians, pipeline, background, ATF, TCM, quiet=False, stop_file=None):
     render_path = os.path.join(model_path, name, "interpolate_all_{}".format(iteration), "renders")
     makedirs(render_path, exist_ok=True)
 
@@ -158,6 +165,7 @@ def interpolate_all(model_path, load2gpt_on_the_fly, name, iteration, views, gau
 
     renderings = []
     for i, pose in enumerate(tqdm(render_poses, desc="Rendering", disable=quiet, mininterval=5.0)):
+        raise_if_stop_requested(stop_file, "render", iteration)
         fid = torch.Tensor([i / (frame - 1)]).cuda()
 
         matrix = np.linalg.inv(np.array(pose))
@@ -183,7 +191,7 @@ def interpolate_all(model_path, load2gpt_on_the_fly, name, iteration, views, gau
     renderings = np.stack(renderings, 0).transpose(0, 2, 3, 1)
     imageio.mimwrite(os.path.join(render_path, 'video.mp4'), renderings, fps=30, quality=8)
 
-def interpolate_view_original(model_path, load2gpt_on_the_fly, name, iteration, views, gaussians, pipeline, background, ATF, TCM, quiet=False):
+def interpolate_view_original(model_path, load2gpt_on_the_fly, name, iteration, views, gaussians, pipeline, background, ATF, TCM, quiet=False, stop_file=None):
     render_path = os.path.join(model_path, name, "interpolate_hyper_view_{}".format(iteration), "renders")
 
 
@@ -202,6 +210,7 @@ def interpolate_view_original(model_path, load2gpt_on_the_fly, name, iteration, 
     view = views[0]
     renderings = []
     for i in tqdm(range(frame), desc="Rendering", disable=quiet, mininterval=5.0):
+        raise_if_stop_requested(stop_file, "render", iteration)
         fid = torch.Tensor([i / (frame - 1)]).cuda()
 
         query_idx = i / frame * len(views)
@@ -244,8 +253,9 @@ def interpolate_view_original(model_path, load2gpt_on_the_fly, name, iteration, 
 
 
 def render_sets(dataset: ModelParams, iteration: int, pipeline: PipelineParams, skip_train: bool, skip_test: bool,
-                mode: str, quiet: bool = False):
+                mode: str, quiet: bool = False, stop_file=None):
     with torch.no_grad():
+        raise_if_stop_requested(stop_file, "render", iteration)
         gaussians = GaussianModel(dataset.sh_degree)
         scene = Scene(dataset, gaussians, load_iteration=iteration, shuffle=False)
         ATF = ATFModel(dataset.is_blender)
@@ -267,7 +277,7 @@ def render_sets(dataset: ModelParams, iteration: int, pipeline: PipelineParams, 
         if not skip_train:
             render_func(dataset.model_path, dataset.load2gpu_on_the_fly, "train", scene.loaded_iter,
                         scene.getTrainCameras(), gaussians, pipeline,
-                        background, ATF, TCM, quiet)
+                        background, ATF, TCM, quiet, stop_file)
 
         if not skip_test:
             output_name = evaluation_output_name(
@@ -276,7 +286,7 @@ def render_sets(dataset: ModelParams, iteration: int, pipeline: PipelineParams, 
             )
             render_func(dataset.model_path, dataset.load2gpu_on_the_fly, output_name, scene.loaded_iter,
                         scene.getTestCameras(), gaussians, pipeline,
-                        background, ATF, TCM, quiet)
+                        background, ATF, TCM, quiet, stop_file)
 
 
 if __name__ == "__main__":
@@ -288,6 +298,7 @@ if __name__ == "__main__":
     parser.add_argument("--skip_train", default=True, action="store_true")
     parser.add_argument("--skip_test", action="store_true")
     parser.add_argument("--quiet", action="store_true")
+    parser.add_argument("--stop_file", default=None)
     parser.add_argument(
         "--mode", default='render', choices=['render', 'time', 'all', 'original']
     )
@@ -297,4 +308,22 @@ if __name__ == "__main__":
     # Initialize system state (RNG)
     safe_state(args.quiet)
 
-    render_sets(model.extract(args), args.iteration, pipeline.extract(args), args.skip_train, args.skip_test, args.mode, args.quiet)
+    try:
+        render_sets(
+            model.extract(args),
+            args.iteration,
+            pipeline.extract(args),
+            args.skip_train,
+            args.skip_test,
+            args.mode,
+            args.quiet,
+            args.stop_file,
+        )
+    except UserStopRequested as exc:
+        print(
+            "[INTERRUPTED] phase={} last_completed_iteration={} stop_reason=user_request".format(
+                exc.phase, exc.last_completed_iteration
+            ),
+            flush=True,
+        )
+        raise SystemExit(INTERRUPTED_EXIT_CODE)

@@ -68,7 +68,9 @@ class CudaExtensionTests(unittest.TestCase):
         colors = torch.tensor(
             [[0.2, 0.5, 0.8]], device=device, requires_grad=True
         )
-        opacities = torch.tensor([[0.8]], device=device, requires_grad=True)
+        # Inverted-opacity compensation at p=0.05 can exceed one; the local
+        # kernel must accept the value without NaN/Inf in forward or backward.
+        opacities = torch.tensor([[1.05]], device=device, requires_grad=True)
         scales = torch.tensor(
             [[0.15, 0.15, 0.15]], device=device, requires_grad=True
         )
