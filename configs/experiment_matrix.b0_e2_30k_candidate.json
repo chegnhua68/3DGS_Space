@@ -1,0 +1,38 @@
+{
+  "schema_version": 1,
+  "source_path": "data/TI-NSD/heated",
+  "dataset_manifest": "data/TI-NSD/heated/dataset_manifest.v1.json",
+  "output_root": "runs/b0_e2_longtrain/v1",
+  "common_args": {
+    "aux_loss_version": "filtered_edge",
+    "data_device": "cpu",
+    "edge_filter_kernel": 5,
+    "edge_filter_mode": "gaussian",
+    "edge_filter_sigma": 1.0,
+    "evaluation_partition": "val",
+    "eval": true,
+    "gd_max_rate": 0.0,
+    "gd_ramp_end": 3000,
+    "gd_warmup_iterations": 1000,
+    "iterations": 30000,
+    "lambda_detail": 0.0,
+    "lambda_smooth": 0.0,
+    "lambda_thermal": 0.0,
+    "load2gpu_on_the_fly": true,
+    "log_interval": 500,
+    "quiet": true,
+    "resolution": 1,
+    "save_iterations": [7000, 15000, 30000],
+    "tb_flush_secs": 5,
+    "tb_log_interval": 50,
+    "test_iterations": [7000, 15000, 30000]
+  },
+  "experiments": [
+    {"name": "b0_seed2026_30k", "split_manifest": "data/TI-NSD/heated/splits/seed2026/sparse_nested-random_25.json", "degradation_manifest": "data/TI-NSD/heated/derived/noise03_sparse25_seed2026/degradation_manifest.v1.json", "args": {"gd_seed": 106755, "lambda_edge": 0.0, "seed": 2026}},
+    {"name": "e2_seed2026_30k", "split_manifest": "data/TI-NSD/heated/splits/seed2026/sparse_nested-random_25.json", "degradation_manifest": "data/TI-NSD/heated/derived/noise03_sparse25_seed2026/degradation_manifest.v1.json", "args": {"gd_seed": 106755, "lambda_edge": 0.001, "seed": 2026}},
+    {"name": "e2_seed2027_30k", "split_manifest": "data/TI-NSD/heated/splits/seed2026/sparse_nested-random_25.json", "degradation_manifest": "data/TI-NSD/heated/derived/noise03_sparse25_seed2026/degradation_manifest.v1.json", "args": {"gd_seed": 106756, "lambda_edge": 0.001, "seed": 2027}},
+    {"name": "b0_seed2027_30k", "split_manifest": "data/TI-NSD/heated/splits/seed2026/sparse_nested-random_25.json", "degradation_manifest": "data/TI-NSD/heated/derived/noise03_sparse25_seed2026/degradation_manifest.v1.json", "args": {"gd_seed": 106756, "lambda_edge": 0.0, "seed": 2027}},
+    {"name": "b0_seed2028_30k", "split_manifest": "data/TI-NSD/heated/splits/seed2026/sparse_nested-random_25.json", "degradation_manifest": "data/TI-NSD/heated/derived/noise03_sparse25_seed2026/degradation_manifest.v1.json", "args": {"gd_seed": 106757, "lambda_edge": 0.0, "seed": 2028}},
+    {"name": "e2_seed2028_30k", "split_manifest": "data/TI-NSD/heated/splits/seed2026/sparse_nested-random_25.json", "degradation_manifest": "data/TI-NSD/heated/derived/noise03_sparse25_seed2026/degradation_manifest.v1.json", "args": {"gd_seed": 106757, "lambda_edge": 0.001, "seed": 2028}}
+  ]
+}
