@@ -42,6 +42,10 @@ from integrations.thermal3dgs.run_control import (
     write_json_atomic,
     write_run_status,
 )
+from integrations.thermal3dgs.initialization import (
+    load_initialization_package,
+    save_initialization_package,
+)
 import numpy as np
 try:
     from torch.utils.tensorboard import SummaryWriter
@@ -132,7 +136,28 @@ def _camera_sequence_digest(audit_state):
     return audit_state["camera_hasher"].copy().hexdigest()
 
 
+def _write_camera_sequence(model_path, audit_state):
+    sequence = list(audit_state.get("camera_sequence", []))
+    prefix_hashes = {}
+    for checkpoint in (7000, 15000, 30000):
+        digest = hashlib.sha256()
+        for name in sequence[:checkpoint]:
+            digest.update(str(name).encode("utf-8") + b"\0")
+        prefix_hashes[str(checkpoint)] = digest.hexdigest()
+    write_json_atomic(
+        os.path.join(model_path, "camera_sequence.json"),
+        {
+            "schema_version": 1,
+            "count": len(sequence),
+            "sequence": sequence,
+            "prefix_sha256": prefix_hashes,
+            "sequence_sha256": _camera_sequence_digest(audit_state),
+        },
+    )
+
+
 def _write_gd_rng_audit(model_path, gd_controller, audit_state, status):
+    _write_camera_sequence(model_path, audit_state)
     write_json_atomic(
         os.path.join(model_path, "gd_rng_audit.json"),
         {
@@ -140,6 +165,7 @@ def _write_gd_rng_audit(model_path, gd_controller, audit_state, status):
             "status": status,
             "last_completed_iteration": audit_state["last_completed_iteration"],
             "camera_sequence_sha256": _camera_sequence_digest(audit_state),
+            "camera_sequence_count": len(audit_state.get("camera_sequence", [])),
             "gd_generator_state_sha256": gd_controller.state_sha256(),
             "gd": gd_controller.audit_config(),
             "updated_at_utc": utc_now(),
@@ -160,6 +186,7 @@ def training(
     tb_flush_secs=5,
     stop_file=None,
     quiet=False,
+    initialization_path=None,
 ):
     for name, value in (
         ("log_interval", log_interval),
@@ -173,6 +200,7 @@ def training(
     audit_state = {
         "last_completed_iteration": 0,
         "camera_hasher": hashlib.sha256(),
+        "camera_sequence": [],
     }
     write_run_status(
         dataset.model_path,
@@ -204,6 +232,7 @@ def training(
             tb_log_interval=tb_log_interval,
             stop_file=stop_file,
             quiet=quiet,
+            initialization_path=initialization_path,
         )
         _write_gd_rng_audit(dataset.model_path, gd_controller, audit_state, "completed")
         write_run_status(
@@ -256,6 +285,7 @@ def _training_impl(
     tb_log_interval=50,
     stop_file=None,
     quiet=False,
+    initialization_path=None,
 ):
     thermal_weights = (opt.lambda_thermal, opt.lambda_edge, opt.lambda_smooth)
     aux_loss_version = getattr(opt, "aux_loss_version", "legacy")
@@ -292,7 +322,8 @@ def _training_impl(
             )
         )
     aux_summary = " ".join(aux_summary_parts)
-    print("[AUX] " + aux_summary, flush=True)
+    if not quiet:
+        print("[AUX] " + aux_summary, flush=True)
     if tb_writer:
         tb_writer.add_text("config/auxiliary_loss", aux_summary, 0)
     gaussians = GaussianModel(dataset.sh_degree)
@@ -304,6 +335,23 @@ def _training_impl(
 
     scene = Scene(dataset, gaussians)
     gaussians.training_setup(opt)
+
+    if initialization_path:
+        initialization_audit = load_initialization_package(
+            initialization_path,
+            seed=train_seed,
+            gaussians=gaussians,
+            atf=ATF,
+            tcm=TCM,
+        )
+        write_json_atomic(
+            os.path.join(dataset.model_path, "initial_state_audit.json"),
+            {
+                "schema_version": 1,
+                "audit_scope": "before_first_forward_backward_optimizer_step",
+                "initialization": initialization_audit,
+            },
+        )
 
     bg_color = [1, 1, 1] if dataset.white_background else [0, 0, 0]
     background = torch.tensor(bg_color, dtype=torch.float32, device="cuda")
@@ -358,6 +406,7 @@ def _training_impl(
         time_interval = 1 / total_frame
 
         viewpoint_cam = viewpoint_stack.pop(randint(0, len(viewpoint_stack) - 1))
+        audit_state["camera_sequence"].append(str(viewpoint_cam.image_name))
         audit_state["camera_hasher"].update(
             str(viewpoint_cam.image_name).encode("utf-8") + b"\0"
         )
@@ -584,18 +633,19 @@ def _training_impl(
                 progress_bar.set_postfix(
                     {"loss": "{:.6f}".format(component_row["L_total"])}
                 )
-                print(
-                    "[ITER {}] total={:.6f} edge={} gd_p={:.4f} points={} avg_ms={:.2f} peak_mib={:.1f}".format(
-                        iteration,
-                        component_row["L_total"],
-                        raw_edge if raw_edge == "disabled" else "{:.6f}".format(raw_edge),
-                        gd_target_p,
-                        gaussians.get_xyz.shape[0],
-                        average_ms,
-                        peak_memory_mb,
-                    ),
-                    flush=True,
-                )
+                if not quiet:
+                    print(
+                        "[ITER {}] total={:.6f} edge={} gd_p={:.4f} points={} avg_ms={:.2f} peak_mib={:.1f}".format(
+                            iteration,
+                            component_row["L_total"],
+                            raw_edge if raw_edge == "disabled" else "{:.6f}".format(raw_edge),
+                            gd_target_p,
+                            gaussians.get_xyz.shape[0],
+                            average_ms,
+                            peak_memory_mb,
+                        ),
+                        flush=True,
+                    )
                 if tb_writer:
                     tb_writer.add_scalar(
                         "gd/realized_drop_fraction",
@@ -635,7 +685,8 @@ def _training_impl(
                     best_iteration = iteration
 
             if iteration in saving_iterations:
-                print("[ITER {}] saving model".format(iteration), flush=True)
+                if not quiet:
+                    print("[ITER {}] saving model".format(iteration), flush=True)
                 if tb_writer:
                     tb_writer.flush()
                 scene.save(iteration)
@@ -683,8 +734,58 @@ def _training_impl(
                 raise_if_stop_requested(stop_file, "training", iteration)
 
     progress_bar.close()
-    print("Best PSNR = {} in Iteration {}".format(best_psnr, best_iteration), flush=True)
+    if not quiet:
+        print("Best PSNR = {} in Iteration {}".format(best_psnr, best_iteration), flush=True)
     return {"best_psnr": best_psnr, "best_iteration": best_iteration}
+
+
+def prepare_initialization(dataset, opt, output_path, seed):
+    """Create and immediately reload one untrained, auditable step-0 package."""
+    output_path = os.path.abspath(str(output_path))
+    os.makedirs(output_path, exist_ok=True)
+    gaussians = GaussianModel(dataset.sh_degree)
+    atf = ATFModel(dataset.is_blender)
+    atf.train_setting(opt)
+    tcm = TCMModel()
+    tcm.train_setting(opt)
+    scene = Scene(dataset, gaussians)
+    gaussians.training_setup(opt)
+    metadata = {
+        "source_path": dataset.source_path,
+        "dataset_manifest": getattr(dataset, "dataset_manifest", ""),
+        "split_manifest": getattr(dataset, "split_manifest", ""),
+        "degradation_manifest": getattr(dataset, "degradation_manifest", ""),
+        "sh_degree": int(dataset.sh_degree),
+        "train_camera_count": len(scene.getTrainCameras()),
+        "evaluation_camera_count": len(scene.getTestCameras()),
+        "resolution": int(dataset.resolution),
+        "data_device": str(dataset.data_device),
+    }
+    manifest = save_initialization_package(
+        output_path,
+        seed=seed,
+        gaussians=gaussians,
+        atf=atf,
+        tcm=tcm,
+        metadata=metadata,
+    )
+    reload_audit = load_initialization_package(
+        output_path,
+        seed=seed,
+        gaussians=gaussians,
+        atf=atf,
+        tcm=tcm,
+    )
+    write_json_atomic(
+        os.path.join(output_path, "initialization_reload_audit.json"),
+        {
+            "schema_version": 1,
+            "native_step0_save_reload": "passed",
+            "manifest": manifest,
+            "reload": reload_audit,
+        },
+    )
+    return manifest
 
 
 def prepare_output_and_logger(args, run_config=None, flush_secs=5):
@@ -823,8 +924,22 @@ if __name__ == "__main__":
         help="absolute or project-relative sticky stop request file",
     )
     parser.add_argument("--seed", type=int, default=0)
+    parser.add_argument(
+        "--initialization_path",
+        type=str,
+        default=None,
+        help="shared untrained step-0 initialization package directory",
+    )
+    parser.add_argument(
+        "--prepare_initialization",
+        type=str,
+        default=None,
+        help="create and reload an untrained step-0 package, then exit",
+    )
     args = parser.parse_args(sys.argv[1:])
     args.save_iterations.append(args.iterations)
+    if args.prepare_initialization:
+        args.model_path = os.path.abspath(args.prepare_initialization)
     dataset = lp.extract(args)
     optimization = op.extract(args)
     pipeline = pp.extract(args)
@@ -838,6 +953,10 @@ if __name__ == "__main__":
     # Start GUI server, configure and run training
     # network_gui.init(args.ip, args.port)
     torch.autograd.set_detect_anomaly(args.detect_anomaly)
+    if args.prepare_initialization:
+        prepare_initialization(dataset, optimization, args.prepare_initialization, args.seed)
+        print("[DONE] initialization seed={}".format(args.seed), flush=True)
+        raise SystemExit(0)
     try:
         training(
             dataset,
@@ -851,6 +970,7 @@ if __name__ == "__main__":
             tb_flush_secs=args.tb_flush_secs,
             stop_file=args.stop_file,
             quiet=args.quiet,
+            initialization_path=args.initialization_path,
         )
     except UserStopRequested as exc:
         print(

@@ -535,6 +535,35 @@ class ExperimentRunnerTests(unittest.TestCase):
                 self.assertIsInstance(timing["finished_at_utc"], str)
                 self.assertGreaterEqual(timing["wall_seconds"], 0.0)
 
+    def test_training_source_hash_ignores_outputs_but_tracks_source_changes(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            (root / "train.py").write_text("print('v1')\n", encoding="utf-8")
+            (root / "results").mkdir()
+            old_root = RUNNER.REPOSITORY_ROOT
+            RUNNER.REPOSITORY_ROOT = root
+            try:
+                first = RUNNER._training_source_metadata()["sha256"]
+                (root / "results" / "run.log").write_text("runtime\n", encoding="utf-8")
+                self.assertEqual(first, RUNNER._training_source_metadata()["sha256"])
+                (root / "train.py").write_text("print('v2')\n", encoding="utf-8")
+                self.assertNotEqual(first, RUNNER._training_source_metadata()["sha256"])
+            finally:
+                RUNNER.REPOSITORY_ROOT = old_root
+
+    def test_shared_init_matrix_forwards_package_and_three_evaluation_points(self):
+        matrix = RUNNER.load_matrix(
+            REPOSITORY_ROOT / "configs" / "experiment_matrix.b0_e2_shared_init_30k.json"
+        )
+        self.assertEqual(matrix["evaluation_iterations"], [7000, 15000, 30000])
+        self.assertEqual(len(matrix["experiments"]), 6)
+        output, train, render = RUNNER.build_commands(matrix, matrix["experiments"][0])
+        self.assertIn("--initialization_path", train)
+        self.assertTrue(train[train.index("--initialization_path") + 1].endswith("seed_2026"))
+        self.assertEqual(train[train.index("--ATF_lr_max_steps") + 1], "30000")
+        self.assertEqual(output.name, "b0_seed2026_30k")
+        self.assertNotIn("--iteration", render)
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -25,6 +25,8 @@ RESERVED_ARGUMENTS = frozenset(
         "split_manifest",
         "degradation_manifest",
         "stop_file",
+        "initialization_path",
+        "prepare_initialization",
     )
 )
 INPUT_HASH_KEYS = frozenset(
@@ -212,7 +214,12 @@ def load_matrix(path: Path) -> Dict[str, object]:
         "common_args",
         "experiments",
     }
-    unknown = set(matrix) - required
+    allowed_root_fields = required | {
+        "initialization_root",
+        "results_root",
+        "evaluation_iterations",
+    }
+    unknown = set(matrix) - allowed_root_fields
     missing = required - set(matrix)
     if missing or unknown:
         raise MatrixError(
@@ -225,6 +232,22 @@ def load_matrix(path: Path) -> Dict[str, object]:
     for key in ("source_path", "dataset_manifest", "output_root"):
         if not isinstance(matrix[key], str) or not matrix[key]:
             raise MatrixError("{} must be a non-empty path string".format(key))
+    for key in ("initialization_root", "results_root"):
+        if key in matrix and (not isinstance(matrix[key], str) or not matrix[key]):
+            raise MatrixError("{} must be a non-empty path string".format(key))
+    evaluation_iterations = matrix.get("evaluation_iterations")
+    if evaluation_iterations is not None:
+        if (
+            not isinstance(evaluation_iterations, list)
+            or not evaluation_iterations
+            or any(
+                isinstance(value, bool)
+                or not isinstance(value, int)
+                or value < 1
+                for value in evaluation_iterations
+            )
+        ):
+            raise MatrixError("evaluation_iterations must be a non-empty list of positive integers")
     if not isinstance(matrix["common_args"], dict):
         raise MatrixError("common_args must be an object")
     if not isinstance(matrix["experiments"], list) or not matrix["experiments"]:
@@ -239,6 +262,7 @@ def load_matrix(path: Path) -> Dict[str, object]:
             "split_manifest",
             "degradation_manifest",
             "expected_input_sha256",
+            "initialization_seed",
             "args",
         }
         missing_experiment = {"name", "split_manifest", "args"} - set(experiment)
@@ -271,6 +295,12 @@ def load_matrix(path: Path) -> Dict[str, object]:
             raise MatrixError("degradation_manifest must be null or a path string")
         if not isinstance(experiment["args"], dict):
             raise MatrixError("experiment args must be an object")
+        if "initialization_seed" in experiment and (
+            isinstance(experiment["initialization_seed"], bool)
+            or not isinstance(experiment["initialization_seed"], int)
+            or experiment["initialization_seed"] < 0
+        ):
+            raise MatrixError("initialization_seed must be a non-negative integer")
         _validate_expected_hashes(
             experiment.get("expected_input_sha256"),
             "experiments[{}].expected_input_sha256".format(index),
@@ -299,7 +329,7 @@ def load_matrix(path: Path) -> Dict[str, object]:
 
 def _append_arguments(command: List[str], arguments: Mapping[str, object]) -> None:
     for key in sorted(arguments):
-        if not key or any(character not in "abcdefghijklmnopqrstuvwxyz0123456789_" for character in key):
+        if not key or any(character not in "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_" for character in key):
             raise MatrixError("invalid CLI argument name: {!r}".format(key))
         value = arguments[key]
         if key in RESERVED_ARGUMENTS:
@@ -347,6 +377,19 @@ def build_commands(
     arguments = dict(matrix["common_args"])
     arguments.update(experiment["args"])
     _append_arguments(train_command, arguments)
+    initialization_root = matrix.get("initialization_root")
+    if initialization_root:
+        seed = experiment.get("initialization_seed", arguments.get("seed"))
+        if isinstance(seed, bool) or not isinstance(seed, int) or seed < 0:
+            raise MatrixError(
+                "shared initialization requires a non-negative initialization_seed or args.seed"
+            )
+        train_command.extend(
+            (
+                "--initialization_path",
+                str(_resolve_path(str(initialization_root)) / ("seed_{}".format(seed))),
+            )
+        )
     stop_file = _resolve_path(str(matrix["output_root"])) / "STOP_REQUESTED"
     train_command.extend(("--stop_file", str(stop_file)))
     evaluation_partition = arguments.get("evaluation_partition", "test")
@@ -367,6 +410,35 @@ def build_commands(
     return output_path, train_command, render_command
 
 
+def build_initialization_command(
+    matrix: Mapping[str, object], experiment: Mapping[str, object], output_path: Path
+) -> List[str]:
+    """Build the native train.py command that prepares one step-0 package."""
+    arguments = dict(matrix["common_args"])
+    arguments.update(experiment["args"])
+    seed = experiment.get("initialization_seed", arguments.get("seed"))
+    if isinstance(seed, bool) or not isinstance(seed, int) or seed < 0:
+        raise MatrixError("shared initialization requires a non-negative seed")
+    command = [
+        sys.executable,
+        str(REPOSITORY_ROOT / "train.py"),
+        "-s",
+        str(_resolve_path(str(matrix["source_path"]))),
+        "-m",
+        str(output_path),
+        "--dataset_manifest",
+        str(_resolve_path(str(matrix["dataset_manifest"]))),
+        "--split_manifest",
+        str(_resolve_path(str(experiment["split_manifest"]))),
+    ]
+    degradation = experiment.get("degradation_manifest")
+    if degradation:
+        command.extend(("--degradation_manifest", str(_resolve_path(str(degradation)))))
+    _append_arguments(command, arguments)
+    command.extend(("--prepare_initialization", str(output_path)))
+    return command
+
+
 def _sha256_file(path: Path) -> str:
     digest = hashlib.sha256()
     with path.open("rb") as stream:
@@ -376,6 +448,54 @@ def _sha256_file(path: Path) -> str:
                 break
             digest.update(chunk)
     return digest.hexdigest()
+
+
+SOURCE_ROOTS = (
+    "train.py",
+    "render.py",
+    "arguments",
+    "scene",
+    "gaussian_renderer",
+    "utils",
+    "losses",
+    "integrations",
+    "scripts",
+    "tools",
+)
+SOURCE_SUFFIXES = frozenset((".py", ".c", ".cc", ".cpp", ".cu", ".h", ".hh", ".hpp"))
+
+
+def _training_source_files() -> List[Path]:
+    paths = []
+    for relative_root in SOURCE_ROOTS:
+        root = REPOSITORY_ROOT / relative_root
+        if root.is_file():
+            candidates = [root]
+        elif root.is_dir():
+            candidates = root.rglob("*")
+        else:
+            candidates = []
+        for path in candidates:
+            if (
+                path.is_file()
+                and path.suffix.lower() in SOURCE_SUFFIXES
+                and "__pycache__" not in path.parts
+            ):
+                paths.append(path)
+    return sorted(set(paths), key=lambda path: path.relative_to(REPOSITORY_ROOT).as_posix())
+
+
+def _training_source_metadata() -> Dict[str, object]:
+    digest = hashlib.sha256()
+    files = []
+    for path in _training_source_files():
+        relative = path.relative_to(REPOSITORY_ROOT).as_posix()
+        content_hash = _sha256_file(path)
+        digest.update(relative.encode("utf-8"))
+        digest.update(b"\0")
+        digest.update(bytes.fromhex(content_hash))
+        files.append({"path": relative, "sha256": content_hash})
+    return {"sha256": digest.hexdigest(), "files": files}
 
 
 def _git_metadata() -> Dict[str, object]:
@@ -429,6 +549,9 @@ def _git_metadata() -> Dict[str, object]:
             "diff_sha256": hashlib.sha256(diff).hexdigest(),
             "source_snapshot_sha256": snapshot.hexdigest(),
         }
+        training_source = _training_source_metadata()
+        metadata["training_source_sha256"] = training_source["sha256"]
+        metadata["training_source_files"] = training_source["files"]
     except (OSError, subprocess.CalledProcessError, UnicodeError):
         pass
     return metadata
@@ -518,6 +641,8 @@ def run_experiment(
     expected_input_hashes: Optional[Mapping[str, str]] = None,
     auxiliary_loss_config: Optional[Mapping[str, object]] = None,
     stop_file: Optional[Path] = None,
+    evaluation_iterations: Optional[Sequence[int]] = None,
+    config_sha256: Optional[str] = None,
 ) -> str:
     if output_path.exists() and not allow_existing:
         raise FileExistsError(
@@ -545,6 +670,7 @@ def run_experiment(
         "python": sys.version,
         "platform": platform.platform(),
         "git": _git_metadata(),
+        "config_sha256": config_sha256,
         "input_file_sha256": input_hashes,
         "expected_input_file_sha256": {
             name: digest.lower()
@@ -552,6 +678,8 @@ def run_experiment(
         },
         "train_command": train_command,
         "render_command": render_command,
+        "render_commands": [],
+        "evaluation_iterations": list(evaluation_iterations or []),
         "auxiliary_loss_config": (
             dict(auxiliary_loss_config) if auxiliary_loss_config is not None else None
         ),
@@ -586,27 +714,47 @@ def run_experiment(
                     }
                 print("[DONE] {} train".format(name), flush=True)
             if not skip_render:
-                print("[START] {} render".format(name), flush=True)
+                render_iterations = list(evaluation_iterations or [])
+                render_commands = []
+                if render_iterations:
+                    render_commands = [
+                        list(render_command) + ["--iteration", str(iteration)]
+                        for iteration in render_iterations
+                    ]
+                else:
+                    render_commands = [list(render_command)]
+                record["render_commands"] = render_commands
                 phase_started = _utc_now()
                 phase_clock = time.perf_counter()
                 try:
-                    _run_child(
-                        render_command,
-                        cwd=str(REPOSITORY_ROOT),
-                        stdout_stream=stdout_stream,
-                        stderr_stream=stderr_stream,
-                        stop_file=stop_file,
-                        phase="render",
-                        record=record,
-                        run_manifest_path=run_manifest_path,
-                    )
+                    for render_index, command in enumerate(render_commands):
+                        iteration_label = (
+                            " iteration {}".format(render_iterations[render_index])
+                            if render_iterations
+                            else ""
+                        )
+                        print("[START] {} render{}".format(name, iteration_label), flush=True)
+                        _run_child(
+                            command,
+                            cwd=str(REPOSITORY_ROOT),
+                            stdout_stream=stdout_stream,
+                            stderr_stream=stderr_stream,
+                            stop_file=stop_file,
+                            phase=(
+                                "render_{}".format(render_iterations[render_index])
+                                if render_iterations
+                                else "render"
+                            ),
+                            record=record,
+                            run_manifest_path=run_manifest_path,
+                        )
+                        print("[DONE] {} render{}".format(name, iteration_label), flush=True)
                 finally:
                     record["phase_timings"]["render"] = {
                         "started_at_utc": phase_started,
                         "finished_at_utc": _utc_now(),
                         "wall_seconds": time.perf_counter() - phase_clock,
                     }
-                print("[DONE] {} render".format(name), flush=True)
         record["status"] = "completed"
         return record["status"]
     except ExperimentInterrupted as exc:
@@ -641,11 +789,91 @@ def build_argument_parser() -> argparse.ArgumentParser:
     return parser
 
 
+def _prepare_shared_initializations(
+    matrix: Mapping[str, object], experiments: Sequence[Mapping[str, object]], stop_file: Path,
+    allow_existing: bool,
+) -> List[Dict[str, object]]:
+    initialization_root_value = matrix.get("initialization_root")
+    if not initialization_root_value:
+        return []
+    initialization_root = _resolve_path(str(initialization_root_value))
+    results_root = _resolve_path(
+        str(matrix.get("results_root", "results/" + initialization_root.name))
+    )
+    checks_root = results_root / "checks"
+    checks_root.mkdir(parents=True, exist_ok=True)
+    by_seed = {}
+    for experiment in experiments:
+        arguments = dict(matrix["common_args"])
+        arguments.update(experiment["args"])
+        seed = experiment.get("initialization_seed", arguments.get("seed"))
+        if isinstance(seed, bool) or not isinstance(seed, int) or seed < 0:
+            raise MatrixError("shared initialization requires a non-negative seed")
+        by_seed.setdefault(seed, experiment)
+    initialization_root.mkdir(parents=True, exist_ok=True)
+    entries = []
+    for seed, experiment in sorted(by_seed.items()):
+        if stop_file.is_file():
+            raise ExperimentInterrupted("initialization")
+        output_path = initialization_root / ("seed_{}".format(seed))
+        package_path = output_path / "init_step0.pt"
+        manifest_path = output_path / "init_manifest.json"
+        command = build_initialization_command(matrix, experiment, output_path)
+        entry = {
+            "seed": seed,
+            "path": str(output_path),
+            "command": command,
+            "stdout": str(checks_root / ("initialization_seed{}.stdout.log".format(seed))),
+            "stderr": str(checks_root / ("initialization_seed{}.stderr.log".format(seed))),
+        }
+        if output_path.exists() and not allow_existing:
+            raise FileExistsError(
+                "refusing to reuse existing initialization output: {}".format(output_path)
+            )
+        if package_path.is_file() and manifest_path.is_file() and allow_existing:
+            entry["status"] = "reused"
+            entries.append(entry)
+            continue
+        if output_path.exists() and any(output_path.iterdir()):
+            raise FileExistsError(
+                "initialization output is non-empty and cannot be reused: {}".format(output_path)
+            )
+        stdout_path = Path(entry["stdout"])
+        stderr_path = Path(entry["stderr"])
+        stdout_path.parent.mkdir(parents=True, exist_ok=True)
+        with stdout_path.open("w", encoding="utf-8", buffering=1) as stdout_stream, stderr_path.open(
+            "w", encoding="utf-8", buffering=1
+        ) as stderr_stream:
+            process = subprocess.Popen(
+                command,
+                cwd=str(REPOSITORY_ROOT),
+                stdout=stdout_stream,
+                stderr=stderr_stream,
+            )
+            entry["pid"] = process.pid
+            return_code = process.wait()
+        if return_code != 0:
+            entry["status"] = "failed"
+            raise subprocess.CalledProcessError(return_code, command)
+        if not package_path.is_file() or not manifest_path.is_file():
+            entry["status"] = "failed"
+            raise FileNotFoundError("initialization package missing: {}".format(output_path))
+        entry["status"] = "completed"
+        entries.append(entry)
+    _write_json_atomic(
+        initialization_root / "initialization_manifest.json",
+        {"schema_version": 1, "entries": entries},
+    )
+    return entries
+
+
 def main(argv: Optional[Sequence[str]] = None) -> int:
     parser = build_argument_parser()
     args = parser.parse_args(argv)
     try:
-        matrix = load_matrix(args.matrix.resolve())
+        matrix_path = args.matrix.resolve()
+        matrix = load_matrix(matrix_path)
+        matrix_sha256 = _sha256_file(matrix_path)
         selected = set(args.only) if args.only else None
         known_names = {experiment["name"] for experiment in matrix["experiments"]}
         if selected is not None and selected - known_names:
@@ -666,6 +894,8 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
             "started_at_utc": _utc_now(),
             "finished_at_utc": None,
             "stop_file": str(stop_file),
+            "matrix_sha256": matrix_sha256,
+            "initializations": [],
             "experiments": [
                 {"name": experiment["name"], "status": "not_started"}
                 for experiment in experiments
@@ -680,6 +910,28 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
                 )
             batch_root.mkdir(parents=True, exist_ok=True)
             _write_json_atomic(batch_manifest_path, batch_record)
+            if matrix.get("initialization_root"):
+                batch_record["initializations"] = _prepare_shared_initializations(
+                    matrix, experiments, stop_file, args.allow_existing
+                )
+                _write_json_atomic(batch_manifest_path, batch_record)
+        elif matrix.get("initialization_root"):
+            by_seed = {}
+            for experiment in experiments:
+                arguments = dict(matrix["common_args"])
+                arguments.update(experiment["args"])
+                seed = experiment.get("initialization_seed", arguments.get("seed"))
+                by_seed.setdefault(seed, experiment)
+            for seed, experiment in sorted(by_seed.items()):
+                output_path = _resolve_path(str(matrix["initialization_root"])) / ("seed_{}".format(seed))
+                print(
+                    "[initialization_seed{}] {}".format(
+                        seed,
+                        subprocess.list2cmdline(
+                            build_initialization_command(matrix, experiment, output_path)
+                        ),
+                    )
+                )
         for index, experiment in enumerate(experiments):
             name = experiment["name"]
             output, train_command, render_command = build_commands(matrix, experiment)
@@ -715,6 +967,8 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
                         matrix["common_args"], experiment["args"]
                     ),
                     stop_file=stop_file,
+                    evaluation_iterations=matrix.get("evaluation_iterations"),
+                    config_sha256=matrix_sha256,
                 )
             except Exception:
                 batch_record["experiments"][index]["status"] = "failed"
@@ -738,6 +992,9 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
             batch_record["status"] = "completed"
             batch_record["finished_at_utc"] = _utc_now()
             _write_json_atomic(batch_manifest_path, batch_record)
+    except ExperimentInterrupted as exc:
+        print("[INTERRUPTED] {}".format(exc), flush=True)
+        return INTERRUPTED_EXIT_CODE
     except (MatrixError, OSError, TypeError, ValueError) as exc:
         parser.error(str(exc))
     return 0
