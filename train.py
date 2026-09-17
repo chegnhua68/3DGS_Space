@@ -31,6 +31,7 @@ from arguments import (
     PipelineParams,
     OptimizationParams,
     validate_aux_loss_options,
+    validate_supervision_options,
 )
 from integrations.thermal3dgs.gaussian_dropout import GaussianDropoutController
 from integrations.thermal3dgs.run_control import (
@@ -46,6 +47,7 @@ from integrations.thermal3dgs.initialization import (
     load_initialization_package,
     save_initialization_package,
 )
+from integrations.thermal3dgs.soft_target import SoftTargetStore
 import numpy as np
 try:
     from torch.utils.tensorboard import SummaryWriter
@@ -67,9 +69,14 @@ LOSS_COMPONENT_FIELDS = (
     "lambda_thermal",
     "lambda_edge",
     "lambda_smooth",
+    "supervision_mode",
+    "supervision_rho",
     "lambda_detail",
     "detail_status",
     "L_baseline",
+    "main_l1",
+    "main_ssim_loss",
+    "observed_l1",
     "L_thermal_raw",
     "L_edge_raw",
     "L_smooth_raw",
@@ -94,9 +101,13 @@ LIVE_LOSS_FIELDS = (
     "train_seed",
     "loss_total",
     "loss_base",
+    "main_l1",
+    "main_ssim_loss",
     "edge_raw",
     "edge_weighted",
     "lambda_edge",
+    "supervision_mode",
+    "supervision_rho",
     "gd_target_p",
 )
 
@@ -196,6 +207,7 @@ def training(
         if isinstance(value, bool) or not isinstance(value, int) or value < 1:
             raise ValueError("{} must be a positive integer".format(name))
     validate_aux_loss_options(opt)
+    validate_supervision_options(opt)
     stop_file = resolve_stop_file(stop_file)
     audit_state = {
         "last_completed_iteration": 0,
@@ -288,6 +300,10 @@ def _training_impl(
     initialization_path=None,
 ):
     thermal_weights = (opt.lambda_thermal, opt.lambda_edge, opt.lambda_smooth)
+    supervision_mode = getattr(opt, "supervision_mode", "observed")
+    supervision_rho = float(getattr(opt, "ds_rho", 0.0))
+    supervision_manifest = getattr(opt, "supervision_manifest", "")
+    validate_supervision_options(opt)
     aux_loss_version = getattr(opt, "aux_loss_version", "legacy")
     edge_filter_mode = getattr(opt, "edge_filter_mode", "gaussian")
     edge_filter_kernel = getattr(opt, "edge_filter_kernel", 5)
@@ -326,6 +342,15 @@ def _training_impl(
         print("[AUX] " + aux_summary, flush=True)
     if tb_writer:
         tb_writer.add_text("config/auxiliary_loss", aux_summary, 0)
+        tb_writer.add_text(
+            "config/supervision",
+            "main_target={} rho={} manifest={}".format(
+                supervision_mode,
+                supervision_rho,
+                supervision_manifest or "none",
+            ),
+            0,
+        )
     gaussians = GaussianModel(dataset.sh_degree)
     ATF = ATFModel(dataset.is_blender)
     ATF.train_setting(opt)
@@ -350,6 +375,37 @@ def _training_impl(
                 "schema_version": 1,
                 "audit_scope": "before_first_forward_backward_optimizer_step",
                 "initialization": initialization_audit,
+            },
+        )
+
+    soft_target_store = None
+    if supervision_mode == "denoised_soft_target":
+        soft_target_store = SoftTargetStore(
+            supervision_manifest,
+            rho=supervision_rho,
+        )
+        write_json_atomic(
+            os.path.join(dataset.model_path, "supervision_audit.json"),
+            {
+                "schema_version": 1,
+                "mode": supervision_mode,
+                "rho": supervision_rho,
+                "manifest": os.path.abspath(supervision_manifest),
+                "manifest_sha256": soft_target_store.manifest_sha256,
+                "cache_key": soft_target_store.cache_key,
+                "train_selected_count": len(soft_target_store.train_ids),
+                "target_loading": "cpu_cache_then_on_demand_gpu",
+            },
+        )
+    else:
+        write_json_atomic(
+            os.path.join(dataset.model_path, "supervision_audit.json"),
+            {
+                "schema_version": 1,
+                "mode": "observed",
+                "rho": 0.0,
+                "manifest": None,
+                "cache_loaded": False,
             },
         )
 
@@ -451,8 +507,13 @@ def _training_impl(
         image, viewspace_point_tensor, visibility_filter, radii = render_pkg_re["render"], render_pkg_re[
             "viewspace_points"], render_pkg_re["visibility_filter"], render_pkg_re["radii"]
 
-        # Loss
-        gt_image = viewpoint_cam.original_image.cuda()
+        # Loss: observed_image remains the noisy Y used by the original E2 edge term.
+        observed_image = viewpoint_cam.original_image.cuda()
+        target_image = observed_image
+        if soft_target_store is not None:
+            target_image = soft_target_store.target_for(
+                str(viewpoint_cam.image_name), observed_image
+            )
         
 #        #modified
 #        if iteration >= 2*opt.warm_up:
@@ -470,21 +531,22 @@ def _training_impl(
 ##            k = 1
         image = image + TCM.step(image)
         # cq:
-        c_loss = corners_loss(image, gt_image)
+        c_loss = corners_loss(image, target_image)
         #import pdb;pdb.set_trace()
-        Ll1 = l1_loss(image, gt_image)
+        Ll1 = l1_loss(image, target_image)
+        main_ssim_loss = 1.0 - ssim(image, target_image)
         if iteration<30000000:
         #if iteration<0:
-            baseline_loss = (1.0 - opt.lambda_dssim -0.2) * (Ll1) + opt.lambda_dssim * (1.0 - ssim(image, gt_image)) + 0.2*c_loss*max(1-iteration/5000,0)
+            baseline_loss = (1.0 - opt.lambda_dssim -0.2) * Ll1 + opt.lambda_dssim * main_ssim_loss + 0.2*c_loss*max(1-iteration/5000,0)
         else:
-            baseline_loss = (1.0 - opt.lambda_dssim) * (Ll1) + opt.lambda_dssim * (1.0 - ssim(image, gt_image))
+            baseline_loss = (1.0 - opt.lambda_dssim) * Ll1 + opt.lambda_dssim * main_ssim_loss
         loss = baseline_loss
         thermal_terms = None
         thermal_extra = None
         if thermal_loss_enabled:
             thermal_extra, thermal_terms = thermal_physics_loss(
                 image,
-                gt_image,
+                observed_image,
                 lambda_thermal=opt.lambda_thermal,
                 lambda_edge=opt.lambda_edge,
                 lambda_smooth=opt.lambda_smooth,
@@ -534,6 +596,8 @@ def _training_impl(
                     (
                         loss.detach(),
                         baseline_loss.detach(),
+                        Ll1.detach(),
+                        main_ssim_loss.detach(),
                         edge_tensor.detach(),
                         (edge_tensor * opt.lambda_edge).detach(),
                     )
@@ -541,9 +605,15 @@ def _training_impl(
                 scalar_values = {
                     "loss_total": packed[0],
                     "loss_base": packed[1],
-                    "edge_raw": packed[2],
-                    "edge_weighted": packed[3],
+                    "main_l1": packed[2],
+                    "main_ssim_loss": packed[3],
+                    "edge_raw": packed[4],
+                    "edge_weighted": packed[5],
                 }
+                if audit_due:
+                    scalar_values["observed_l1"] = float(
+                        l1_loss(image, observed_image).detach().item()
+                    )
 
             if live_due:
                 live_row = {
@@ -551,20 +621,30 @@ def _training_impl(
                     "timestamp_utc": utc_now(),
                     "phase": "train",
                     "train_seed": train_seed,
-                    **scalar_values,
+                    "loss_total": scalar_values["loss_total"],
+                    "loss_base": scalar_values["loss_base"],
+                    "main_l1": scalar_values["main_l1"],
+                    "main_ssim_loss": scalar_values["main_ssim_loss"],
+                    "edge_raw": scalar_values["edge_raw"],
+                    "edge_weighted": scalar_values["edge_weighted"],
                     "lambda_edge": opt.lambda_edge,
                     "gd_target_p": gd_target_p,
+                    "supervision_mode": supervision_mode,
+                    "supervision_rho": supervision_rho,
                 }
                 _append_live_loss_log(live_loss_path, live_row)
                 if tb_writer:
                     for tag, field in (
                         ("train/loss_total", "loss_total"),
                         ("train/loss_base", "loss_base"),
+                        ("train/main_l1", "main_l1"),
+                        ("train/main_ssim_loss", "main_ssim_loss"),
                         ("train/edge_raw", "edge_raw"),
                         ("train/edge_weighted", "edge_weighted"),
                     ):
                         tb_writer.add_scalar(tag, scalar_values[field], iteration)
                     tb_writer.add_scalar("train/lambda_edge", opt.lambda_edge, iteration)
+                    tb_writer.add_scalar("supervision/rho", supervision_rho, iteration)
                     tb_writer.add_scalar("gd/target_p", gd_target_p, iteration)
                     if iteration == 1:
                         tb_writer.flush()
@@ -610,9 +690,14 @@ def _training_impl(
                     "lambda_thermal": opt.lambda_thermal,
                     "lambda_edge": opt.lambda_edge,
                     "lambda_smooth": opt.lambda_smooth,
+                    "supervision_mode": supervision_mode,
+                    "supervision_rho": supervision_rho,
                     "lambda_detail": 0.0,
                     "detail_status": "disabled",
                     "L_baseline": scalar_values["loss_base"],
+                    "main_l1": scalar_values["main_l1"],
+                    "main_ssim_loss": scalar_values["main_ssim_loss"],
+                    "observed_l1": scalar_values.get("observed_l1", "unavailable"),
                     "L_thermal_raw": raw_thermal,
                     "L_edge_raw": raw_edge,
                     "L_smooth_raw": raw_smooth,
@@ -660,6 +745,12 @@ def _training_impl(
                     tb_writer.add_scalar(
                         "system/cuda_allocated_peak_mib", peak_memory_mb, iteration
                     )
+                    if "observed_l1" in scalar_values:
+                        tb_writer.add_scalar(
+                            "monitor/observed_l1",
+                            scalar_values["observed_l1"],
+                            iteration,
+                        )
 
             # Keep track of max radii in image-space for pruning
             gaussians.max_radii2D[visibility_filter] = torch.max(gaussians.max_radii2D[visibility_filter],
@@ -678,7 +769,8 @@ def _training_impl(
                                        TCM, dataset.load2gpu_on_the_fly,
                                        dataset.evaluation_partition if dataset.dataset_manifest else "test",
                                        stop_file=stop_file,
-                                       last_completed_iteration=audit_state["last_completed_iteration"])
+                                       last_completed_iteration=audit_state["last_completed_iteration"],
+                                       quiet=quiet)
             if iteration in testing_iterations:
                 if cur_psnr.item() > best_psnr:
                     best_psnr = cur_psnr.item()
@@ -814,7 +906,7 @@ def prepare_output_and_logger(args, run_config=None, flush_secs=5):
 
 def training_report(tb_writer, iteration, testing_iterations, scene: Scene, renderFunc,
                     renderArgs, ATF, TCM, load2gpu_on_the_fly, evaluation_partition="test",
-                    stop_file=None, last_completed_iteration=0):
+                    stop_file=None, last_completed_iteration=0, quiet=False):
     test_psnr = 0.0
     # Report test and samples of training set
     if iteration in testing_iterations:
@@ -874,7 +966,8 @@ def training_report(tb_writer, iteration, testing_iterations, scene: Scene, rend
                 psnr_test = psnr(images, gts).mean()
                 if config['name'] == evaluation_partition or len(validation_configs[0]['cameras']) == 0:
                     test_psnr = psnr_test
-                print("[ITER {}] Evaluating {}: L1 {} PSNR {}".format(iteration, config['name'], l1_test, psnr_test))
+                if not quiet:
+                    print("[ITER {}] Evaluating {}: L1 {} PSNR {}".format(iteration, config['name'], l1_test, psnr_test))
                 if tb_writer and config['name'] == evaluation_partition:
                     tb_writer.add_scalar('val_monitor/l1', l1_test, iteration)
                     tb_writer.add_scalar('val_monitor/psnr', psnr_test, iteration)

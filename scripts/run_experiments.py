@@ -30,7 +30,7 @@ RESERVED_ARGUMENTS = frozenset(
     )
 )
 INPUT_HASH_KEYS = frozenset(
-    ("dataset_manifest", "split_manifest", "degradation_manifest")
+    ("dataset_manifest", "split_manifest", "degradation_manifest", "supervision_manifest")
 )
 
 
@@ -117,6 +117,23 @@ def _validate_gd_arguments(arguments: Mapping[str, object], label: str) -> None:
         value = arguments.get(name, {"log_interval": 500, "tb_log_interval": 50, "tb_flush_secs": 5}[name])
         if isinstance(value, bool) or not isinstance(value, int) or value < 1:
             raise MatrixError("{}.{} must be a positive integer".format(label, name))
+
+
+def _validate_supervision_arguments(arguments: Mapping[str, object], label: str) -> None:
+    mode = arguments.get("supervision_mode", "observed")
+    if mode not in ("observed", "denoised_soft_target"):
+        raise MatrixError("{}.supervision_mode is invalid".format(label))
+    manifest = arguments.get("supervision_manifest", "")
+    rho = arguments.get("ds_rho", 0.0)
+    if isinstance(rho, bool) or not isinstance(rho, (int, float)) or not math.isfinite(float(rho)):
+        raise MatrixError("{}.ds_rho must be finite".format(label))
+    rho = float(rho)
+    if mode == "observed":
+        if rho != 0.0 or manifest:
+            raise MatrixError("{}.observed requires ds_rho=0 and no supervision_manifest".format(label))
+    else:
+        if rho != 0.75 or not isinstance(manifest, str) or not manifest:
+            raise MatrixError("{}.denoised_soft_target requires rho=0.75 and a manifest".format(label))
 
 
 def _resolved_auxiliary_loss_config(
@@ -322,6 +339,9 @@ def load_matrix(path: Path) -> Dict[str, object]:
             resolved_arguments, "experiments[{}]".format(index)
         )
         _validate_gd_arguments(
+            resolved_arguments, "experiments[{}]".format(index)
+        )
+        _validate_supervision_arguments(
             resolved_arguments, "experiments[{}]".format(index)
         )
     return matrix
@@ -575,7 +595,12 @@ def _write_json_atomic(path: Path, value: Mapping[str, object]) -> None:
 
 def _input_hashes(train_command: Sequence[str]) -> Dict[str, str]:
     hashes = {}
-    for flag in ("--dataset_manifest", "--split_manifest", "--degradation_manifest"):
+    for flag in (
+        "--dataset_manifest",
+        "--split_manifest",
+        "--degradation_manifest",
+        "--supervision_manifest",
+    ):
         if flag not in train_command:
             continue
         path = Path(train_command[train_command.index(flag) + 1])

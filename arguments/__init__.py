@@ -87,6 +87,35 @@ def validate_aux_loss_options(options) -> None:
     validate_gaussian_dropout_options(options)
 
 
+def validate_supervision_options(options) -> None:
+    """Validate the observed/denoised-soft-target supervision contract."""
+
+    mode = _option_value(options, "supervision_mode", "observed")
+    if mode not in ("observed", "denoised_soft_target"):
+        raise ValueError(
+            "supervision_mode must be 'observed' or 'denoised_soft_target'"
+        )
+    manifest = _option_value(options, "supervision_manifest", "")
+    rho = _option_value(options, "ds_rho", 0.0)
+    if isinstance(rho, bool) or not isinstance(rho, (int, float)):
+        raise TypeError("ds_rho must be a real scalar")
+    rho = float(rho)
+    if not math.isfinite(rho) or rho < 0 or rho > 1:
+        raise ValueError("ds_rho must be finite and in [0, 1]")
+    if mode == "observed":
+        if rho != 0.0:
+            raise ValueError("observed supervision requires ds_rho=0")
+        if manifest:
+            raise ValueError("observed supervision must not load a supervision_manifest")
+    else:
+        if rho != 0.75:
+            raise ValueError("denoised_soft_target supervision requires ds_rho=0.75")
+        if not isinstance(manifest, str) or not manifest.strip():
+            raise ValueError(
+                "denoised_soft_target supervision requires supervision_manifest"
+            )
+
+
 def evaluation_output_name(dataset_manifest, evaluation_partition):
     """Return the on-disk name for the selected held-out partition."""
 
@@ -182,6 +211,9 @@ class OptimizationParams(ParamGroup):
         self.lambda_edge = 0.0
         self.lambda_smooth = 0.0
         self.lambda_detail = 0.0
+        self.supervision_mode = "observed"
+        self.supervision_manifest = ""
+        self.ds_rho = 0.0
         self.noise_beta = 5.0
         self.edge_gamma = 3.0
         self.aux_loss_version = "legacy"
@@ -202,6 +234,9 @@ class OptimizationParams(ParamGroup):
     def extract(self, args):
         group = super().extract(args)
         validate_aux_loss_options(group)
+        validate_supervision_options(group)
+        if getattr(group, "supervision_manifest", ""):
+            group.supervision_manifest = os.path.abspath(group.supervision_manifest)
         return group
 
 

@@ -13,10 +13,19 @@ from arguments import (
     _parse_cfg_namespace,
     evaluation_output_name,
     validate_aux_loss_options,
+    validate_supervision_options,
 )
 
 
 class ConfigParserTests(unittest.TestCase):
+    def test_supervision_contract(self):
+        validate_supervision_options({"supervision_mode": "observed", "ds_rho": 0.0, "supervision_manifest": ""})
+        validate_supervision_options({"supervision_mode": "denoised_soft_target", "ds_rho": 0.75, "supervision_manifest": "cache.json"})
+        with self.assertRaises(ValueError):
+            validate_supervision_options({"supervision_mode": "observed", "ds_rho": 0.75, "supervision_manifest": ""})
+        with self.assertRaises(ValueError):
+            validate_supervision_options({"supervision_mode": "denoised_soft_target", "ds_rho": 0.5, "supervision_manifest": "cache.json"})
+
     def test_aux_loss_defaults_preserve_legacy_behavior(self):
         parser = ArgumentParser()
         parameters = OptimizationParams(parser)
